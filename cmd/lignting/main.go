@@ -108,7 +108,9 @@ func main() {
 	srv.SetMessageSink(coreSink{rt: rt})
 	orgSvc := core.NewOrgService(st, rt)
 	srv.SetOrgService(orgSvc)
-	wireActions(rt, orgSvc, st)
+	workSvc := core.NewWorkService(st)
+	srv.SetWorkService(workSvc)
+	wireActions(rt, orgSvc, workSvc, st)
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
