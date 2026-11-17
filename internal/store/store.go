@@ -8,17 +8,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-//go:embed schema.sql
+//go:embed schema.sql migrations/*.sql
 var schemaFiles embed.FS
 
 // SchemaVersion 是内嵌 schema 的迁移版本，保存在 schema_migrations。
-const SchemaVersion = 1
+// v1 = 冻结的 schema.sql；v2+ = migrations/NNN_*.sql 按版本追加。
+const SchemaVersion = 2
 
 // 仓储层错误。平台层负责把它们映射为 HTTP 错误码；store 不做业务规则。
 var (
@@ -71,8 +75,8 @@ func SchemaSQL() (string, error) {
 	return string(b), nil
 }
 
-// Migrate 幂等应用内嵌 schema。schema.sql 本身就是 v1 迁移；
-// 后续版本以 migration 文件追加，不修改已冻结的 schema.sql。
+// Migrate 幂等应用内嵌迁移：v1 = 冻结的 schema.sql；v2+ = migrations/NNN_*.sql
+// 按版本顺序追加，每个版本独立事务并写 schema_migrations。已冻结的 schema.sql 不改。
 func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"); err != nil {
 		return fmt.Errorf("schema_migrations: %w", err)
@@ -84,25 +88,81 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if version >= SchemaVersion {
 		return nil
 	}
-	schemaSQL, err := SchemaSQL()
+	if version < 1 {
+		schemaSQL, err := SchemaSQL()
+		if err != nil {
+			return fmt.Errorf("read embedded schema: %w", err)
+		}
+		if err := s.applyMigration(ctx, 1, schemaSQL); err != nil {
+			return err
+		}
+		version = 1
+	}
+	entries, err := schemaFiles.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("read embedded schema: %w", err)
+		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema v%d: %w", SchemaVersion, err)
+	sort.Strings(names)
+	for _, name := range names {
+		v, err := migrationVersion(name)
+		if err != nil {
+			return err
+		}
+		if v <= version {
+			continue
+		}
+		sqlText, err := schemaFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		if err := s.applyMigration(ctx, v, string(sqlText)); err != nil {
+			return err
+		}
+		version = v
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES(?,?)", SchemaVersion, Now()); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration: %w", err)
+	if version < SchemaVersion {
+		return fmt.Errorf("migration incomplete: current=%d want=%d", version, SchemaVersion)
 	}
 	return nil
+}
+
+// applyMigration 在独立事务内应用一个版本并记录。
+func (s *Store) applyMigration(ctx context.Context, version int, sqlText string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration v%d: %w", version, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, sqlText); err != nil {
+		return fmt.Errorf("apply migration v%d: %w", version, err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES(?,?)", version, Now()); err != nil {
+		return fmt.Errorf("record migration v%d: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration v%d: %w", version, err)
+	}
+	return nil
+}
+
+// migrationVersion 从 NNN_name.sql 解析版本号。
+func migrationVersion(name string) (int, error) {
+	base := strings.TrimSuffix(name, ".sql")
+	end := strings.IndexByte(base, '_')
+	if end < 0 {
+		end = len(base)
+	}
+	v, err := strconv.Atoi(base[:end])
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("bad migration filename %q", name)
+	}
+	return v, nil
 }
 
 // Now 返回统一时间格式：RFC3339 UTC + 固定 9 位小数秒，

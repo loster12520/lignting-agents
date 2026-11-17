@@ -59,7 +59,7 @@ await import("../app.js");
 await wait(200);
 
 ok("外壳已挂载 .app", count(".app") === 1, "app children=" + app.childNodes.length);
-ok("侧栏 8 个导航项", count(".nav-item") === 8, String(count(".nav-item")));
+ok("侧栏 10 个导航项", count(".nav-item") === 10, String(count(".nav-item")));
 const convs = count(".conv-item");
 ok("会话列表渲染（>=8）", convs >= 8, String(convs));
 ok("默认进入助理私聊", (location.hash || "").indexOf("conv_dm_assistant") >= 0, location.hash);

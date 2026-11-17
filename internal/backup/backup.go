@@ -66,45 +66,45 @@ type FileInfo struct {
 	// Path is the archive-relative path using forward slashes.
 	Path string `json:"path"`
 	// Kind is database, config or artifact.
-	Kind string `json:"kind"`
-	Size int64 `json:"size"`
+	Kind   string `json:"kind"`
+	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
 }
 
 // ExcludedEntry documents something intentionally not backed up.
 type ExcludedEntry struct {
-	Path string `json:"path"`
+	Path   string `json:"path"`
 	Reason string `json:"reason"`
 }
 
 // RedactionInfo records how sensitive data was handled.
 type RedactionInfo struct {
-	ConfigRedacted bool `json:"config_redacted"`
-	SecretsExcluded bool `json:"secrets_excluded"`
+	ConfigRedacted          bool `json:"config_redacted"`
+	SecretsExcluded         bool `json:"secrets_excluded"`
 	SensitiveValuesRedacted bool `json:"sensitive_values_redacted"`
 }
 
 // Manifest is the machine-readable index stored as manifest.json in a backup.
 type Manifest struct {
-	Format string `json:"format"`
-	FormatVersion int `json:"format_version"`
-	BackupID string `json:"backup_id"`
-	AppVersion string `json:"app_version"`
-	SchemaVersion int `json:"schema_version"`
-	CreatedAt string `json:"created_at"`
-	Database FileInfo `json:"database"`
-	Files []FileInfo `json:"files"`
-	TotalSize int64 `json:"total_size"`
-	Excluded []ExcludedEntry `json:"excluded"`
-	Redaction RedactionInfo `json:"redaction"`
-	Notes []string `json:"notes,omitempty"`
+	Format        string          `json:"format"`
+	FormatVersion int             `json:"format_version"`
+	BackupID      string          `json:"backup_id"`
+	AppVersion    string          `json:"app_version"`
+	SchemaVersion int             `json:"schema_version"`
+	CreatedAt     string          `json:"created_at"`
+	Database      FileInfo        `json:"database"`
+	Files         []FileInfo      `json:"files"`
+	TotalSize     int64           `json:"total_size"`
+	Excluded      []ExcludedEntry `json:"excluded"`
+	Redaction     RedactionInfo   `json:"redaction"`
+	Notes         []string        `json:"notes,omitempty"`
 }
 
 // BackupResult describes a completed backup.
 type BackupResult struct {
-	Path string `json:"path"`
-	Size int64 `json:"size"`
-	SHA256 string `json:"sha256"`
+	Path     string   `json:"path"`
+	Size     int64    `json:"size"`
+	SHA256   string   `json:"sha256"`
 	Manifest Manifest `json:"manifest"`
 }
 
@@ -233,18 +233,18 @@ func Backup(ctx context.Context, dataDir string) (*BackupResult, error) {
 	}
 
 	m := Manifest{
-		Format: FormatName,
+		Format:        FormatName,
 		FormatVersion: FormatVersion,
-		BackupID: id,
-		AppVersion: config.Version,
+		BackupID:      id,
+		AppVersion:    config.Version,
 		SchemaVersion: store.SchemaVersion,
-		CreatedAt: createdAt,
-		Database: dbInfo,
-		Files: files,
-		Excluded: excluded,
+		CreatedAt:     createdAt,
+		Database:      dbInfo,
+		Files:         files,
+		Excluded:      excluded,
 		Redaction: RedactionInfo{
-			ConfigRedacted: true,
-			SecretsExcluded: true,
+			ConfigRedacted:          true,
+			SecretsExcluded:         true,
 			SensitiveValuesRedacted: true,
 		},
 	}

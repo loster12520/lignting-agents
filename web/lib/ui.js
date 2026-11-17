@@ -1,5 +1,6 @@
 // 共享 UI 片段：状态徽章、头像、结构化卡片（只读投影）。
 import { el, badge, initials, fmtDateTime, relTime } from "./dom.js";
+import { state } from "./store.js";
 
 export const AGENT_STATUS = {
   idle: ["空闲", ""], running: ["运行中", "accent"], waiting: ["等待审批", "warn"],
@@ -45,6 +46,20 @@ export const MSG_TYPE = {
   review: "评审", decision: "决策", approval: "审批", artifact: "产出",
   group_event: "群事件", write_event: "写事件", system: "系统", trace: "轨迹"
 };
+
+// 把 agent_id / dept_id 显示成可读名称（未知 id 原样保留，避免"看不见的证据"）
+export function nameOfAgent(id) {
+  if (!id) return "—";
+  if (state.owner && state.owner.id === id) return state.owner.name || id;
+  const hit = (state.agents || []).filter(function (a) { return a.id === id; })[0];
+  return hit ? hit.name : id;
+}
+
+export function nameOfDept(id) {
+  if (!id) return "—";
+  const hit = (state.departments || []).filter(function (d) { return d.id === id; })[0];
+  return hit ? hit.name : id;
+}
 
 export function statusBadge(status, table) {
   const t = table[status];

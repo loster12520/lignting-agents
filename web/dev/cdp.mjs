@@ -132,6 +132,8 @@ try {
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: c.width, height: c.height, deviceScaleFactor: 1, mobile: false
     });
+    await cdp.send("Page.navigate", { url: "about:blank" });
+    await sleep(150);
     const sep = c.path.indexOf("?") >= 0 ? "&" : "?";
     await cdp.send("Page.navigate", { url: base + c.path + sep + "_cb=" + Date.now() });
     await sleep(1600);

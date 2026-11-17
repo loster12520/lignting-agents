@@ -14,9 +14,10 @@ type UsageFilter struct {
 	TaskID         string
 	ConversationID string
 	Model          string
+	DepartmentID   string
 	From           string
 	To             string
-	// GroupBy: agent(默认) | task | model | day
+	// GroupBy: agent(默认) | task | model | day | department
 	GroupBy string
 	Limit   int
 }
@@ -28,6 +29,7 @@ type UsageAggregate struct {
 	TaskID           string  `json:"task_id,omitempty"`
 	Model            string  `json:"model,omitempty"`
 	Day              string  `json:"day,omitempty"`
+	DepartmentID     string  `json:"department_id,omitempty"`
 	Calls            int64   `json:"calls"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
@@ -66,6 +68,8 @@ func (s *Store) QueryUsage(ctx context.Context, f UsageFilter) ([]UsageAggregate
 		keyExpr = "model"
 	case "day":
 		keyExpr = "substr(created_at,1,10)"
+	case "department":
+		keyExpr = "COALESCE((SELECT a.department_id FROM agents a WHERE a.id=usage_ledger.agent_id), (SELECT t.department_id FROM tasks t WHERE t.id=usage_ledger.task_id), '')"
 	default:
 		return nil, fmt.Errorf("%w: unsupported group_by %s", ErrInvalid, f.GroupBy)
 	}
@@ -84,6 +88,10 @@ func (s *Store) QueryUsage(ctx context.Context, f UsageFilter) ([]UsageAggregate
 	if f.Model != "" {
 		where = append(where, "model=?")
 		args = append(args, f.Model)
+	}
+	if f.DepartmentID != "" {
+		where = append(where, "(EXISTS (SELECT 1 FROM agents a WHERE a.id=usage_ledger.agent_id AND a.department_id=?) OR EXISTS (SELECT 1 FROM tasks t WHERE t.id=usage_ledger.task_id AND t.department_id=?))")
+		args = append(args, f.DepartmentID, f.DepartmentID)
 	}
 	if f.From != "" {
 		where = append(where, "created_at >= ?")
@@ -122,10 +130,46 @@ func (s *Store) QueryUsage(ctx context.Context, f UsageFilter) ([]UsageAggregate
 			a.Model = a.Key
 		case "day":
 			a.Day = a.Key
+		case "department":
+			a.DepartmentID = a.Key
 		default:
 			a.AgentID = a.Key
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SumUsage 按 agent/task/department/时间聚合用量（core 预算 guard 的读端口）。
+// department 过滤优先用 agents.department_id，agent 不存在时回退任务归属。
+func (s *Store) SumUsage(ctx context.Context, q domain.UsageQuery) (domain.UsageTotals, error) {
+	where := []string{"1=1"}
+	args := make([]any, 0, 8)
+	if q.AgentID != "" {
+		where = append(where, "u.agent_id=?")
+		args = append(args, q.AgentID)
+	}
+	if q.TaskID != "" {
+		where = append(where, "u.task_id=?")
+		args = append(args, q.TaskID)
+	}
+	if q.From != "" {
+		where = append(where, "u.created_at >= ?")
+		args = append(args, q.From)
+	}
+	if q.To != "" {
+		where = append(where, "u.created_at <= ?")
+		args = append(args, q.To)
+	}
+	if q.DepartmentID != "" {
+		where = append(where, "(EXISTS (SELECT 1 FROM agents a WHERE a.id=u.agent_id AND a.department_id=?) OR EXISTS (SELECT 1 FROM tasks t WHERE t.id=u.task_id AND t.department_id=?))")
+		args = append(args, q.DepartmentID, q.DepartmentID)
+	}
+	var t domain.UsageTotals
+	err := s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(u.prompt_tokens),0), COALESCE(SUM(u.completion_tokens),0), COALESCE(SUM(u.cached_tokens),0), COALESCE(SUM(u.cost),0) FROM usage_ledger u WHERE "+strings.Join(where, " AND "), args...).
+		Scan(&t.PromptTokens, &t.CompletionTokens, &t.CachedTokens, &t.Cost)
+	if err != nil {
+		return domain.UsageTotals{}, fmt.Errorf("sum usage: %w", err)
+	}
+	return t, nil
 }

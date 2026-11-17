@@ -2,19 +2,205 @@
 
 package ac
 
-import "testing"
+import (
+	"context"
+	"net/url"
+	"testing"
 
-// TestAC14GroupChatAndAgentLifecycle 覆盖 requirements.md §14 AC-14「群聊与 Agent 管理」。
-// 依赖轮次：R3。
-// 证据命令：go test -tags=acceptance ./tests/ac -run TestAC14GroupChatAndAgentLifecycle -v
-//
-// 实现时删除 SkipSkeleton，并按以下步骤断言（前置/通过标准见 requirements §14）：
-//  1. 创建项目群聊/部门群聊/临时讨论组；增删成员/设置可见性；消息全量落库、可检索、断线补齐（FR-CHAT-14/15）。
-//  2. 用户 @ 两个 Agent→按发言队列依次回复，不刷屏（FR-CHAT-15）。
-//  3. 用户以观察者身份看另一部门群聊：可读、默认不参与；join 后可发言（FR-CHAT-16）。
-//  4. POST /api/agents/{id}/pause|resume|stop 生效；状态/角色卡/分工视角/预算/最近行为可见（FR-CHAT-09、FR-SEC-07）。
-//  5. 员工私聊其他部门员工/部门主管私聊用户→拒绝并提示路径（找主管/找助理/开桥）（FR-CHAT-16）。
-//  6. 用户开临时跨部门直连桥 bridge_1（范围+到期）→到期自动关闭并留审计（FR-CHAT-16）。
+	"github.com/lignting/lignting-agents/internal/store"
+	"github.com/lignting/lignting-agents/tests/fixtures"
+)
+
+// TestAC14GroupChatAndAgentLifecycle covers the R3-available part of AC-14:
+// project/temp group creation, members, visibility/title patch, messages
+// persisted + searchable, observer join/leave, agent pause/resume + role card
+// visibility, audit. Still R6/R8: @ mention reply queue, cross-department DM
+// rejection paths, expiring bridge, Agent stop (needs runtime).
 func TestAC14GroupChatAndAgentLifecycle(t *testing.T) {
-	SkipSkeleton(t, "AC-14", "R3", "群聊/观察者/发言队列/生命周期/隔离/临时桥")
+	h := NewHarness(t, WithSeed(), WithCoreServices())
+	h.EnsureSession()
+
+	type conv struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Title      string `json:"title"`
+		Visibility string `json:"visibility"`
+		ExpiresAt  string `json:"expires_at"`
+		Members    []struct {
+			PrincipalType string `json:"principal_type"`
+			PrincipalID   string `json:"principal_id"`
+			Role          string `json:"role"`
+		} `json:"members"`
+		MemberCount int `json:"member_count"`
+	}
+
+	// 1) Project group chat with three department leads.
+	var project conv
+	h.PostData(t, "/api/conversations", map[string]any{
+		"type": "project", "title": "AC-14 项目群", "visibility": "project",
+		"member_ids": []string{fixtures.AgentProdLeadID, fixtures.AgentDevLeadID, fixtures.AgentTestLeadID},
+	}, &project)
+	if project.ID == "" || project.Type != "project" || project.Title != "AC-14 项目群" {
+		t.Fatalf("project conversation = %+v", project)
+	}
+	if len(project.Members) != 4 || project.MemberCount != 4 {
+		t.Fatalf("project members = %d/%d, want owner + 3 leads", len(project.Members), project.MemberCount)
+	}
+	memberSet := map[string]bool{}
+	for _, m := range project.Members {
+		memberSet[m.PrincipalID] = true
+	}
+	for _, id := range []string{"owner", fixtures.AgentProdLeadID, fixtures.AgentDevLeadID, fixtures.AgentTestLeadID} {
+		if !memberSet[id] {
+			t.Errorf("project member missing %s", id)
+		}
+	}
+
+	// 2) Temporary discussion group with expiry.
+	var temp conv
+	h.PostData(t, "/api/conversations", map[string]any{
+		"type": "temp", "title": "AC-14 临时讨论", "visibility": "org",
+		"member_ids": []string{fixtures.AgentDevAID, fixtures.AgentDevBID},
+		"expires_at": "2030-12-31T00:00:00Z",
+	}, &temp)
+	if temp.Type != "temp" || temp.ExpiresAt == "" {
+		t.Fatalf("temp conversation = %+v", temp)
+	}
+
+	// 3) Patch title/visibility/members; membership is replace-set.
+	var patched conv
+	h.ExpectStatus(t, "PATCH", "/api/conversations/"+temp.ID, map[string]any{
+		"title": "AC-14 临时讨论（改）", "visibility": "project",
+		"member_ids": []string{fixtures.AgentDevAID, fixtures.AgentTestEmpID},
+	}, 200).Data(t, &patched)
+	if patched.Title != "AC-14 临时讨论（改）" || patched.Visibility != "project" {
+		t.Fatalf("patched conversation = %+v", patched)
+	}
+	if len(patched.Members) != 3 { // owner + 2 agents
+		t.Fatalf("patched members = %d, want 3", len(patched.Members))
+	}
+
+	// 4) Messages are persisted and searchable; @ mentions are stored verbatim
+	// (reply queue itself is R6 and asserted as a remaining gap below).
+	post := func(content string) {
+		t.Helper()
+		var out struct {
+			Message struct {
+				ID  string `json:"id"`
+				Seq int64  `json:"seq"`
+			} `json:"message"`
+		}
+		h.PostData(t, "/api/conversations/"+project.ID+"/messages", map[string]any{"content": content}, &out)
+		if out.Message.ID == "" || out.Message.Seq <= 0 {
+			t.Fatalf("post message = %+v", out)
+		}
+	}
+	post("@研发主管 @测试主管 请同步接口字段；群聊检索关键字：蓝鲸。")
+	post("AC-14 第二条消息：观察者默认不参与。")
+
+	var msgs struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	h.GetData(t, "/api/conversations/"+project.ID+"/messages", &msgs)
+	if msgs.Total != 2 {
+		t.Fatalf("project messages = %d, want 2", msgs.Total)
+	}
+	var hits struct {
+		Items []struct {
+			Kind  string `json:"kind"`
+			RefID string `json:"ref_id"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	h.GetData(t, "/api/search?"+url.Values{"q": {"蓝鲸"}}.Encode(), &hits)
+	if hits.Total < 1 {
+		t.Fatalf("group message not searchable: total=%d", hits.Total)
+	}
+
+	// 5) Observer on a seeded department chat: readable, join/leave audited.
+	deptConvID := h.Seed.Conversations["conv_dept_dev"]
+	if deptConvID == "" {
+		t.Fatal("seeded engineering department conversation missing")
+	}
+	var deptConv conv
+	h.GetData(t, "/api/conversations/"+deptConvID, &deptConv)
+	if deptConv.ID != deptConvID {
+		t.Fatalf("dept conversation = %+v", deptConv)
+	}
+	observer := false
+	for _, m := range deptConv.Members {
+		if m.PrincipalType == "user" && m.Role == "observer" {
+			observer = true
+		}
+	}
+	if !observer {
+		t.Fatalf("owner is not observer in department chat: %+v", deptConv.Members)
+	}
+	h.ExpectStatus(t, "POST", "/api/conversations/"+deptConvID+"/join", map[string]any{}, 200)
+	h.ExpectStatus(t, "POST", "/api/conversations/"+deptConvID+"/leave", map[string]any{}, 200)
+
+	// 6) Agent lifecycle + visible role card/perspective/budget.
+	var agent struct {
+		ID          string  `json:"id"`
+		Kind        string  `json:"kind"`
+		Status      string  `json:"status"`
+		RoleCard    string  `json:"role_card"`
+		Perspective string  `json:"perspective"`
+		BudgetLimit float64 `json:"budget_limit"`
+	}
+	h.GetData(t, "/api/agents/"+fixtures.AgentDevLeadID, &agent)
+	if agent.ID != fixtures.AgentDevLeadID || agent.RoleCard == "" || agent.Perspective == "" {
+		t.Fatalf("agent detail = %+v", agent)
+	}
+	var paused struct {
+		Status string `json:"status"`
+	}
+	h.PostData(t, "/api/agents/"+fixtures.AgentDevLeadID+"/pause", map[string]any{"reason": "AC-14"}, &paused)
+	if paused.Status != "paused" {
+		t.Fatalf("agent pause status = %q", paused.Status)
+	}
+	var resumed struct {
+		Status string `json:"status"`
+	}
+	h.PostData(t, "/api/agents/"+fixtures.AgentDevLeadID+"/resume", map[string]any{}, &resumed)
+	if resumed.Status != "idle" {
+		t.Fatalf("agent resume status = %q", resumed.Status)
+	}
+	// Stop requires a live Runtime; acceptance harness injects OrgService with a
+	// nil Runtime, so the call must fail explicitly rather than report success.
+	stop, err := h.Client.PostJSON("/api/agents/"+fixtures.AgentDevLeadID+"/stop", map[string]any{"reason": "AC-14"})
+	if err != nil {
+		t.Fatalf("stop without runtime: %v", err)
+	}
+	if stop.Status == 200 {
+		t.Fatal("stop without runtime reported success")
+	}
+	t.Logf("AC-14 stop without runtime returned %d (expected limitation; needs e2e runtime)", stop.Status)
+
+	// 7) Audit: conversation create/update/join/leave + agent lifecycle.
+	audits, err := h.Store.QueryAudit(context.Background(), store.AuditFilter{Limit: 300})
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	actions := map[string]bool{}
+	for _, a := range audits {
+		actions[a.Action] = true
+	}
+	for _, want := range []string{"conversation.join", "conversation.leave", "org.agent.pause", "org.agent.resume"} {
+		if !actions[want] {
+			t.Errorf("audit missing %q", want)
+		}
+	}
+	if _, err := h.Store.VerifyAuditChain(context.Background()); err != nil {
+		t.Fatalf("audit chain: %v", err)
+	}
+
+	t.Log("AC-14 R3 passed: project/temp group, members/patch, messages searchable, observer join/leave, agent pause/resume, audit")
+	t.Run("mention_queue_dm_isolation_bridge_stop", func(t *testing.T) {
+		SkipSkeleton(t, "AC-14 @-reply queue / cross-dept DM rejection / expiring bridge / Agent stop", "R6/R8", "需要 core 路由与 bridge API（R6）")
+	})
 }

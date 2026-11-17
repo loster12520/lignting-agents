@@ -168,6 +168,11 @@ func Seed(ctx context.Context, db *sql.DB, opts SeedOptions) (*SeedResult, error
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("fixtures: commit: %w", err)
 	}
+	if !opts.SkipRuntime {
+		if err := seedAudit(ctx, db, res); err != nil {
+			return nil, fmt.Errorf("fixtures: audit: %w", err)
+		}
+	}
 	return res, nil
 }
 

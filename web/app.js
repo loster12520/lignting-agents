@@ -455,7 +455,12 @@ function startEvents() {
       updateConn(s.status, s.detail);
     },
     onGap: function (g) {
-      toast("检测到事件缺口（seq " + g.from + " → " + g.to + "），已按游标补齐消息", "warn", 5000);
+      // 首连回放/断线补齐常见多次跳跃：只提示一次并静默按游标补齐，避免刷屏
+      const now = Date.now();
+      if (!state.sse.lastGapToastAt || now - state.sse.lastGapToastAt > 8000) {
+        state.sse.lastGapToastAt = now;
+        toast("检测到事件缺口（seq " + g.from + " → " + g.to + "），已按游标补齐消息", "warn", 4200);
+      }
       backfill();
     }
   });

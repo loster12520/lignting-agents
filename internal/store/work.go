@@ -627,8 +627,12 @@ func (s *Store) ListDecisionsByStatus(ctx context.Context, status string) ([]dom
 
 // ListDecisionsByTask 按受影响任务检索决策。
 func (s *Store) ListDecisionsByTask(ctx context.Context, taskID string) ([]domain.Decision, error) {
+	// affected_tasks 可能是 JSON 数组（store/core 决策）或裸 task id（core.Escalate），
+	// 用 json_valid 防 malformed JSON，并兼容裸串匹配。
 	rows, err := s.DB.QueryContext(ctx,
-		"SELECT "+decisionColumns+" FROM decisions WHERE EXISTS (SELECT 1 FROM json_each(decisions.affected_tasks) WHERE value=?) ORDER BY created_at DESC", taskID)
+		"SELECT "+decisionColumns+" FROM decisions WHERE "+
+			"(json_valid(decisions.affected_tasks) AND EXISTS (SELECT 1 FROM json_each(decisions.affected_tasks) WHERE value=?)) OR decisions.affected_tasks=? "+
+			"ORDER BY created_at DESC", taskID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list decisions by task: %w", err)
 	}

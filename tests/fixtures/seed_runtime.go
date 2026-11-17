@@ -80,48 +80,6 @@ func seedRuntime(ctx context.Context, tx *sql.Tx, now string, timelineEntries in
 	}
 	r.GitCommitSHA = "abc123"
 
-	// Audit hash chain: setup, G1 approval, task transition, tool call.
-	audits := []struct {
-		actorType, actor, action, objectType, objectID, result string
-		detail                                                 map[string]any
-	}{
-		{"user", OwnerID, "setup", "owner", OwnerID, "ok", map[string]any{"mode": "acceptance"}},
-		{"user", OwnerID, "approve", "approval", ApprovalG1ID, "ok", map[string]any{"decision": "approved"}},
-		{"agent", AgentDevLeadID, "task.transition", "task", TaskID, "ok", map[string]any{"from": "in_review", "to": "approved"}},
-		{"agent", AgentDevAID, "tool.write_file", "artifact", ArtifactCodeID, "ok", map[string]any{"path": "internal/core/export.go"}},
-	}
-	prev := ""
-	for i, a := range audits {
-		payload := map[string]any{
-			"actor_type": a.actorType, "actor_id": a.actor, "action": a.action,
-			"object_type": a.objectType, "object_id": a.objectID, "result": a.result,
-			"detail": a.detail, "created_at": now, "ord": i,
-		}
-		h := ChainHash(prev, payload)
-		if err := exec(ctx, tx,
-			"INSERT INTO audit_log(actor_type, actor_id, action, object_type, object_id, result, detail, prev_hash, hash, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-			a.actorType, a.actor, a.action, a.objectType, a.objectID, a.result, MustJSON(a.detail), prev, h, now); err != nil {
-			return err
-		}
-		prev = h
-	}
-	rows, err := tx.QueryContext(ctx, "SELECT seq FROM audit_log ORDER BY seq")
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var seq int64
-		if err := rows.Scan(&seq); err != nil {
-			rows.Close()
-			return err
-		}
-		r.AuditSeqs = append(r.AuditSeqs, seq)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
 	// Usage ledger (AC-09 cost attribution).
 	usage := []struct {
 		id, agent, model           string

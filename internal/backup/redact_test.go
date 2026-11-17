@@ -10,7 +10,7 @@ func TestRedactAnyAndJSONText(t *testing.T) {
 	got := redactAny(map[string]any{
 		"api_key": "sk-live-SECRET",
 		"note":    "prefix sk-live-SECRET suffix",
-		"nested": []any{map[string]any{"password": "p", "name": "ok"}},
+		"nested":  []any{map[string]any{"password": "p", "name": "ok"}},
 	}, secrets).(map[string]any)
 	if got["api_key"] != "[REDACTED]" {
 		t.Fatalf("api_key not redacted: %v", got["api_key"])

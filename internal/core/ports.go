@@ -59,7 +59,6 @@ type TaskStore interface {
 // MessageStore 是消息落库/读取端口。seq/id/created_at 为空时由 store 回填。
 type MessageStore interface {
 	AppendMessage(ctx context.Context, msg domain.Message) (domain.Message, error)
-	// RecentMessages 返回最近的消息（按 seq 升序）；beforeSeq<=0 表示取最新 limit 条。
 	RecentMessages(ctx context.Context, conversationID string, limit int, beforeSeq int64) ([]domain.Message, error)
 }
 
@@ -114,8 +113,7 @@ type ToolResult struct {
 	IsError bool
 }
 
-// ToolExecutor 由 internal/tools 实现（R5）。为 nil 时已注册工具返回可读错误，
-// 不影响不调工具的对话。
+// ToolExecutor 由 internal/tools 实现（R5）。为 nil 时已注册工具返回可读错误。
 type ToolExecutor interface {
 	Execute(ctx context.Context, agent domain.Agent, call ToolCall) (ToolResult, error)
 }
@@ -126,10 +124,64 @@ type MemoryQuery struct {
 	ConversationID string
 	TaskID         string
 	Limit          int
+
+	// 快照接口额外字段（旧 Inject 实现可忽略）。
+	TurnID               string
+	Model                string
+	TaskBrief            string
+	EffectiveInputTokens int64
+	RecentMessages       int
+	RecentTokens         int64
+	ManualScope          string
+	IncludeManual        bool
+	IncludeArchives      bool
+}
+
+// MemoryEntrySnapshot 是 memory.InjectedMemory 的 core 侧 DTO 镜像。
+type MemoryEntrySnapshot struct {
+	ID         string `json:"id"`
+	EntityType string `json:"entity_type,omitempty"`
+	EntityKey  string `json:"entity_key,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	Source     string `json:"source"`
+	Visibility string `json:"visibility,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+	Pinned     bool   `json:"pinned,omitempty"`
+	Tokens     int64  `json:"tokens"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// MemoryDroppedSnapshot 是本次因权限/预算被裁掉的记忆（可解释性）。
+type MemoryDroppedSnapshot struct {
+	ID         string `json:"id"`
+	EntityType string `json:"entity_type,omitempty"`
+	EntityKey  string `json:"entity_key,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Tokens     int64  `json:"tokens,omitempty"`
+}
+
+// MemorySnapshot 是 memory.ContextRequest 的 core 侧镜像（可 JSON 化）。
+type MemorySnapshot struct {
+	Entries       []MemoryEntrySnapshot   `json:"entries"`
+	Dropped       []MemoryDroppedSnapshot `json:"dropped,omitempty"`
+	Tokens        int64                   `json:"tokens"`
+	Estimated     int64                   `json:"estimated_tokens,omitempty"`
+	Degraded      bool                    `json:"degraded"`
+	DegradeReason string                  `json:"degrade_reason,omitempty"`
+	ManualVersion int                     `json:"manual_version,omitempty"`
+	ManualTokens  int64                   `json:"manual_tokens,omitempty"`
+	TaskTokens    int64                   `json:"task_tokens,omitempty"`
+	CreatedAt     string                  `json:"created_at,omitempty"`
+}
+
+// MemorySnapshotter 是可选的新接口：memory.Service 实现后 core 优先使用。
+type MemorySnapshotter interface {
+	InjectWithSnapshot(ctx context.Context, q MemoryQuery) (*MemorySnapshot, error)
 }
 
 // MemoryInjector 返回本次 turn 可注入的记忆（已按权限/预算裁剪）。
-// 为 nil 时上下文装配只放「记忆占位」段落。
+// 为 nil 时上下文装配只放「记忆占位」段落；实现 MemorySnapshotter 时优先用快照接口。
 type MemoryInjector interface {
 	Inject(ctx context.Context, q MemoryQuery) ([]domain.Memory, error)
 }

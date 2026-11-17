@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -162,6 +163,10 @@ func DegradedMessage(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, ErrEmergencyStop):
+		return "系统正在紧急停止中，本轮已中止。你可以先浏览/检索；恢复后重试即可，不会丢消息。"
+	case isBudgetBlocked(err):
+		return err.Error()
 	case deepseek.IsNoAPIKey(err):
 		return strings.Join([]string{
 			"我现在无法调用模型：还没有配置 DeepSeek API Key。",

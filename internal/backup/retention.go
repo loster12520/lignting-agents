@@ -22,11 +22,11 @@ type RetentionOptions struct {
 // RetentionEntry is one planned action. PlanRetention never deletes anything;
 // callers must show/confirm the plan and perform cleanup themselves.
 type RetentionEntry struct {
-	Path string `json:"path"`
-	Size int64 `json:"size"`
+	Path      string    `json:"path"`
+	Size      int64     `json:"size"`
 	CreatedAt time.Time `json:"created_at"`
-	Action string `json:"action"` // keep | delete-candidate
-	Reason string `json:"reason"`
+	Action    string    `json:"action"` // keep | delete-candidate
+	Reason    string    `json:"reason"`
 }
 
 // PlanRetention returns a read-only plan for backup archives below
@@ -53,7 +53,7 @@ func PlanRetention(dataDir string, opts RetentionOptions) ([]RetentionEntry, err
 	type candidate struct {
 		path string
 		size int64
-		mod time.Time
+		mod  time.Time
 	}
 	items := make([]candidate, 0, len(list))
 	for _, e := range list {

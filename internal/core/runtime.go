@@ -37,6 +37,10 @@ type Options struct {
 	OwnerName string
 	Now       func() time.Time
 
+	// R8：预算 guard（nil 表示不检查）与紧急停止开关读取（platform settings）。
+	Budget   *BudgetGuard
+	Settings SettingReader
+
 	// 成本估算（每 1K token，人民币）；默认 0 表示只记 token 不估算金额。
 	PromptPricePer1K     float64
 	CompletionPricePer1K float64
@@ -83,6 +87,9 @@ func NewRuntime(opts Options) (*Runtime, error) {
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if opts.Budget != nil && opts.Settings != nil {
+		opts.Budget.AttachSettings(opts.Settings)
+	}
 	return &Runtime{opts: opts, runners: map[string]*runner{}}, nil
 }
 
@@ -120,6 +127,9 @@ func (rt *Runtime) EnqueueUserMessage(ctx context.Context, msg domain.Message) e
 	}
 	if strings.TrimSpace(msg.ConversationID) == "" {
 		return errors.New("core: 消息缺少 conversation_id")
+	}
+	if rt.emergencyStop(ctx) {
+		return domain.NewError(domain.CodeUnavailable, "系统处于紧急停止状态，已拒绝新 turn；恢复后可重试。", 503)
 	}
 	conv, err := rt.opts.Store.GetConversation(ctx, msg.ConversationID)
 	if err != nil {
@@ -334,23 +344,6 @@ func (rt *Runtime) executeTurn(ctx context.Context, agent domain.Agent, userMsg 
 	task := rt.loadTask(ctx, agent.CurrentTaskID)
 	recent := rt.loadRecent(ctx, conv.ID, userMsg)
 
-	var memories []domain.Memory
-	if rt.opts.Memory != nil {
-		memories, _ = rt.opts.Memory.Inject(ctx, MemoryQuery{Agent: agent, ConversationID: conv.ID, TaskID: agent.CurrentTaskID, Limit: 8})
-	}
-
-	assembled := rt.opts.Assembler.Assemble(ContextInput{
-		Agent:          agent,
-		Conversation:   conv,
-		Department:     department,
-		Task:           task,
-		OwnerName:      rt.opts.OwnerName,
-		CurrentMessage: userMsg,
-		Recent:         recent,
-		Memories:       memories,
-		Now:            rt.now(),
-	})
-
 	startedAt := rt.now()
 	turn := domain.Turn{
 		ID:             domain.NewID("turn"),
@@ -364,6 +357,21 @@ func (rt *Runtime) executeTurn(ctx context.Context, agent domain.Agent, userMsg 
 		result.Err = fmt.Errorf("core: 创建 turn 失败: %w", err)
 		return result
 	}
+
+	memories, memorySnapshot := rt.loadMemories(ctx, agent, conv, task, turn.ID, recent)
+
+	assembled := rt.opts.Assembler.Assemble(ContextInput{
+		Agent:          agent,
+		Conversation:   conv,
+		Department:     department,
+		Task:           task,
+		OwnerName:      rt.opts.OwnerName,
+		CurrentMessage: userMsg,
+		Recent:         recent,
+		Memories:       memories,
+		MemorySnapshot: memorySnapshot,
+		Now:            rt.now(),
+	})
 	rt.saveContextSnapshot(ctx, turn, agent, assembled)
 
 	messageID := domain.NewID("msg")
@@ -382,6 +390,16 @@ func (rt *Runtime) executeTurn(ctx context.Context, agent domain.Agent, userMsg 
 	model := firstNonEmpty(agent.Model, rt.opts.Model)
 
 	for round := 0; round <= rt.opts.MaxToolRounds; round++ {
+		if rt.emergencyStop(ctx) {
+			res := rt.failTurn(ctx, agent, conv, turn, messageID, ErrEmergencyStop, toolRounds)
+			rt.updateStatus(ctx, agent, domain.AgentIdle, "emergency_stop")
+			return res
+		}
+		if check, blocked := rt.checkBudget(ctx, agent, conv); blocked {
+			res := rt.failTurn(ctx, agent, conv, turn, messageID, domain.NewError(domain.CodeBudgetBlocked, check.Message, 409), toolRounds)
+			rt.updateStatus(ctx, agent, domain.AgentBudgetBlocked, check.Message)
+			return res
+		}
 		req := deepseek.Request{Model: model, Messages: messages, Tools: tools}
 		resp, callErr := rt.opts.Provider.Stream(ctx, req, func(delta deepseek.Delta) error {
 			if delta.Content == "" {
@@ -614,11 +632,15 @@ func (rt *Runtime) loadTask(ctx context.Context, taskID string) *domain.Task {
 
 func (rt *Runtime) saveContextSnapshot(ctx context.Context, turn domain.Turn, agent domain.Agent, assembled Assembled) {
 	payload, err := json.Marshal(map[string]any{
-		"turn_id":         turn.ID,
-		"agent_id":        agent.ID,
-		"conversation_id": turn.ConversationID,
-		"report":          assembled.Report,
-		"message_count":   len(assembled.Messages),
+		"turn_id":                turn.ID,
+		"agent_id":               agent.ID,
+		"conversation_id":        turn.ConversationID,
+		"report":                 assembled.Report,
+		"message_count":          len(assembled.Messages),
+		"memory_entries":         assembled.Report.MemoryEntries,
+		"memory_ids":             assembled.Report.MemoryIDs,
+		"memory_tokens":          assembled.Report.MemoryTokens,
+		"memory_degraded_reason": assembled.Report.MemoryDegradedReason,
 	})
 	if err != nil {
 		return
@@ -631,6 +653,50 @@ func (rt *Runtime) saveContextSnapshot(ctx context.Context, turn domain.Turn, ag
 		Payload:        string(payload),
 		CreatedAt:      rt.now().Format(time.RFC3339Nano),
 	})
+}
+
+// loadMemories 优先使用 memory 的快照接口；失败时返回降级原因并让上下文继续（手册+任务）。
+func (rt *Runtime) loadMemories(ctx context.Context, agent domain.Agent, conv domain.Conversation, task *domain.Task, turnID string, recent []domain.Message) ([]domain.Memory, *MemorySnapshot) {
+	if rt.opts.Memory == nil {
+		return nil, nil
+	}
+	q := MemoryQuery{
+		Agent: agent, ConversationID: conv.ID, TaskID: agent.CurrentTaskID, Limit: 8,
+		TurnID: turnID, Model: firstNonEmpty(agent.Model, rt.opts.Model),
+		TaskBrief: taskBrief(task), EffectiveInputTokens: int64(rt.opts.Assembler.MaxPromptTokens),
+		RecentMessages: len(recent), IncludeManual: true, IncludeArchives: true,
+	}
+	if snapshotter, ok := rt.opts.Memory.(MemorySnapshotter); ok {
+		snap, err := snapshotter.InjectWithSnapshot(ctx, q)
+		if err != nil {
+			return nil, &MemorySnapshot{Degraded: true, DegradeReason: truncateRunes(err.Error(), 300)}
+		}
+		if snap == nil {
+			return nil, nil
+		}
+		return memoriesFromSnapshot(snap), snap
+	}
+	memories, _ := rt.opts.Memory.Inject(ctx, q)
+	return memories, nil
+}
+
+func taskBrief(task *domain.Task) string {
+	if task == nil {
+		return ""
+	}
+	return strings.TrimSpace(task.Title + "：" + task.Description)
+}
+
+func memoriesFromSnapshot(snap *MemorySnapshot) []domain.Memory {
+	out := make([]domain.Memory, 0, len(snap.Entries))
+	for _, e := range snap.Entries {
+		out = append(out, domain.Memory{
+			ID: e.ID, Content: e.Summary, Summary: e.Summary,
+			Tags: "injected;src:" + e.Source, Visibility: e.Visibility,
+			Confidence: e.Confidence, Version: e.Version,
+		})
+	}
+	return out
 }
 
 func (rt *Runtime) recordUsage(ctx context.Context, agent domain.Agent, conv domain.Conversation, model string, usage deepseek.Usage, turnID string) {

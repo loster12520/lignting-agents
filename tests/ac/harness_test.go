@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/lignting/lignting-agents/internal/config"
+	"github.com/lignting/lignting-agents/internal/core"
+	"github.com/lignting/lignting-agents/internal/memory"
 	"github.com/lignting/lignting-agents/internal/platform"
 	"github.com/lignting/lignting-agents/internal/store"
 	"github.com/lignting/lignting-agents/tests/fixtures"
@@ -31,23 +33,26 @@ import (
 // 127.0.0.1:0 and an HTTP client with a cookie jar. Tests that need seeded
 // departments/tasks call h.SeedDefaults() or pass WithSeed().
 type Harness struct {
-	T       *testing.T
-	DataDir string
-	Cfg     config.Config
-	Store   *store.Store
-	Server  *http.Server
-	BaseURL string
-	Client  *Client
-	Seed    *fixtures.SeedResult
-	Faults  fixtures.Faults
-	Mock    bool
-	stopSrv func()
+	T            *testing.T
+	DataDir      string
+	Cfg          config.Config
+	Store        *store.Store
+	Platform     *platform.Server
+	Server       *http.Server
+	BaseURL      string
+	Client       *Client
+	Seed         *fixtures.SeedResult
+	Faults       fixtures.Faults
+	Mock         bool
+	CoreServices bool
+	stopSrv      func()
 }
 
 type harnessConfig struct {
-	modelMode string
-	faults    fixtures.Faults
-	seed      bool
+	modelMode    string
+	faults       fixtures.Faults
+	seed         bool
+	coreServices bool
 }
 
 // HarnessOption customizes NewHarness.
@@ -68,6 +73,13 @@ func WithFaults(f fixtures.Faults) HarnessOption {
 // WithSeed runs fixtures.SeedDefault before the test body.
 func WithSeed() HarnessOption {
 	return func(c *harnessConfig) { c.seed = true }
+}
+
+// WithCoreServices injects R3 OrgService and R4 WorkService into the platform
+// server (mirrors cmd/lignting wiring). Runtime is nil: organization lifecycle
+// only, no live Agent turn interruption.
+func WithCoreServices() HarnessOption {
+	return func(c *harnessConfig) { c.coreServices = true }
 }
 
 // NewHarness starts an isolated in-process acceptance environment.
@@ -110,7 +122,7 @@ func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock}
+	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock, CoreServices: hc.coreServices}
 	if hc.faults.Enabled() {
 		path, werr := fixtures.WriteFaults(cfg.DataDir, hc.faults)
 		if werr != nil {
@@ -136,6 +148,20 @@ func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 func (h *Harness) Start() {
 	h.T.Helper()
 	srv := platform.New(h.Cfg, h.Store)
+	h.Platform = srv
+	if h.CoreServices {
+		srv.SetOrgService(core.NewOrgService(h.Store, nil))
+		srv.SetWorkService(core.NewWorkService(h.Store))
+		srv.SetDebateService(core.NewDebateService(h.Store))
+		memSvc, err := memory.NewService(memory.Options{
+			Repo:   memory.NewStoreRepo(h.Store),
+			Config: memory.Config{Enabled: true},
+		})
+		if err != nil {
+			h.T.Fatalf("memory service: %v", err)
+		}
+		srv.SetMemoryService(memSvc)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		h.T.Fatalf("listen: %v", err)
@@ -162,6 +188,10 @@ func (h *Harness) Start() {
 
 // Stop shuts down the server and closes the store. Safe to call more than once.
 func (h *Harness) Stop() {
+	if h.Platform != nil {
+		h.Platform.Close()
+		h.Platform = nil
+	}
 	if h.stopSrv != nil {
 		h.stopSrv()
 		h.stopSrv = nil
@@ -307,8 +337,17 @@ func (c *Client) PostJSON(path string, body any) (*Response, error) {
 	return c.Do(context.Background(), http.MethodPost, path, body)
 }
 
+// GetWithHeaders performs GET with extra headers (e.g. X-Lignting-Agent-Token).
+func (c *Client) GetWithHeaders(path string, headers map[string]string) (*Response, error) {
+	return c.do(context.Background(), http.MethodGet, path, nil, headers)
+}
+
 // Do performs an HTTP request and returns status/body without failing the test.
 func (c *Client) Do(ctx context.Context, method, path string, body any) (*Response, error) {
+	return c.do(ctx, method, path, body, nil)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any, extraHeaders map[string]string) (*Response, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -328,6 +367,9 @@ func (c *Client) Do(ctx context.Context, method, path string, body any) (*Respon
 	}
 	if method != http.MethodGet && method != http.MethodHead && c.csrf != "" {
 		req.Header.Set("X-Lignting-CSRF", c.csrf)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

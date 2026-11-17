@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/store"
 )
 
@@ -98,19 +99,30 @@ func (s *Server) handleListReviews(w http.ResponseWriter, r *http.Request, owner
 
 func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request, owner *store.Owner) {
 	_ = owner
-	items, err := s.store.ListDecisionsByStatus(r.Context(), r.URL.Query().Get("status"))
+	ctx := r.Context()
+	q := r.URL.Query()
+	if svc := s.debateService(); svc != nil {
+		var items []domain.Decision
+		var err error
+		switch {
+		case strings.TrimSpace(q.Get("q")) != "":
+			items, err = svc.SearchDecisions(ctx, q.Get("q"))
+		case strings.TrimSpace(q.Get("task_id")) != "":
+			items, err = svc.ListDecisionsByTask(ctx, q.Get("task_id"))
+		default:
+			items, err = svc.ListDecisions(ctx, q.Get("status"))
+		}
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		writeList(w, items, int64(len(items)), "")
+		return
+	}
+	items, err := s.store.ListDecisionsByStatus(ctx, q.Get("status"))
 	if err != nil {
 		s.writeErr(w, err)
 		return
-	}
-	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
-		filtered := items[:0]
-		for _, d := range items {
-			if strings.Contains(d.Title, q) || strings.Contains(d.Decision, q) || strings.Contains(d.Rationale, q) {
-				filtered = append(filtered, d)
-			}
-		}
-		items = filtered
 	}
 	writeList(w, items, int64(len(items)), "")
 }

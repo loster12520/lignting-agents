@@ -62,6 +62,9 @@ type Server struct {
 
 	memMu sync.RWMutex
 	mem   *memory.Service
+
+	debateMu sync.RWMutex
+	debate   DebateService
 }
 
 // New 构造 HTTP 服务并完成 store 侧的索引/事件钩子接线。
@@ -218,6 +221,35 @@ func (s *Server) routes() {
 		http.MethodGet:  s.authed(s.handleListDecisions),
 		http.MethodPost: s.authed(s.handleCreateDecision),
 	})
+	mount("/api/decisions/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetDecision)})
+	mount("/api/decisions/{id}/detail", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleDecisionDetail)})
+	mount("/api/decisions/{id}/dissent", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDecisionDissent)})
+	mount("/api/conversations/{id}/discussions", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handlePostDiscussion)})
+	mount("/api/conversations/{id}/stances", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSubmitStance)})
+	mount("/api/debates/{id}/escalate", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleEscalateDebate)})
+	mount("/api/debates/{id}/close", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCloseDebate)})
+	mount("/api/debates/{id}/reopen", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleReopenDebate)})
+
+	// R4/R5 写工具只读投影。
+	mount("/api/writes/timeline", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleWriteTimeline)})
+	mount("/api/writes", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListWriteEvents)})
+	mount("/api/writes/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetWriteEvent)})
+
+	// R8 成本/用量只读投影。
+	mount("/api/usage", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleUsage)})
+	mount("/api/settings/budgets", map[string]http.HandlerFunc{
+		http.MethodGet: s.authed(s.handleGetBudgets),
+		http.MethodPut: s.authed(s.handlePutBudgets),
+	})
+
+	// R8 运维：备份/导出/导入/恢复/紧急停止/审计。
+	mount("/api/admin/backup", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleBackup)})
+	mount("/api/admin/backups", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListBackups)})
+	mount("/api/admin/restore", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRestore)})
+	mount("/api/admin/export", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleExport)})
+	mount("/api/admin/import", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleImport)})
+	mount("/api/admin/emergency-stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleEmergencyStop)})
+	mount("/api/audit", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleAudit)})
 	mount("/api/approvals", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListApprovals)})
 	mount("/api/tasks/{id}/transition", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleTransitionTask)})
 	mount("/api/tasks/{id}/criteria/{cid}/evidence", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCriterionEvidence)})
@@ -246,6 +278,13 @@ func (s *Server) routes() {
 	mount("/api/manuals/{id}/rollback", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRollbackManual)})
 	mount("/api/context-snapshots", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListContextSnapshots)})
 	mount("/api/turns/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetTurn)})
+
+	// R4 attachments（v2 表）。
+	mount("/api/conversations/{id}/attachments", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCreateAttachment)})
+	mount("/api/attachments/{id}", map[string]http.HandlerFunc{
+		http.MethodGet:    s.handleDownloadAttachment,
+		http.MethodDelete: s.authed(s.handleDeleteAttachment),
+	})
 
 	// R3 §7：意图 / 蓝图+G1 / provisioning / 部门与 Agent 生命周期。
 	mount("/api/intents", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSaveIntent)})

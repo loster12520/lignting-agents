@@ -104,7 +104,7 @@ func TestMemoryInspectorAPIAndContextSnapshots(t *testing.T) {
 
 	// 手册：propose → list
 	status, out = e.doCSRF("POST", "/api/manuals", map[string]any{
-		"scope": "department", "department_id": dept.ID, "content": "接口评审先看兼容性", "sources": []string{"mem_1"},
+		"scope": "department", "department_id": dept.ID, "content": "# 角色\n研发评审\n\n# 目标\n接口评审先看兼容性\n\n# 红线\n不越过人类审批", "sources": []string{"mem_1"},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("propose manual = %d %v", status, out)

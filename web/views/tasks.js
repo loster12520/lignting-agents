@@ -3,7 +3,7 @@
 import { el, clear, icon, badge, notice, emptyState, toast, confirmModal, fmtDateTime, relTime, truncate } from "../lib/dom.js";
 import { state } from "../lib/store.js";
 import { renderMarkdown } from "../lib/mdrender.js";
-import { statusBadge, TASK_STATUS } from "../lib/ui.js";
+import { statusBadge, TASK_STATUS, nameOfAgent, nameOfDept } from "../lib/ui.js";
 
 const STATUSES = ["proposed", "ready", "discussing", "in_progress", "blocked", "in_review", "changes_requested", "approved", "done", "canceled", "failed"];
 const TRANSITIONS = {
@@ -148,7 +148,7 @@ export function mount(ctx, route) {
           t.perspective ? el("div", { class: "card-meta", text: "视角：" + t.perspective }) : null),
         el("td", null, statusBadge(t.status, TASK_STATUS)),
         el("td", { text: dept ? dept.name : (t.department_id || "—") }),
-        el("td", { text: t.owner_id || "—" }),
+        el("td", { text: nameOfAgent(t.owner_id) }),
         el("td", { text: t.perspective || "—" }),
         el("td", null, badge(t.priority || "P2", t.priority === "P0" ? "bad" : t.priority === "P1" ? "warn" : "")),
         el("td", { attrs: { title: fmtDateTime(t.deadline) }, text: t.deadline ? relTime(t.deadline) : "—" })));
@@ -207,13 +207,14 @@ export function mount(ctx, route) {
     if (!f.acceptance.trim()) { toast("DoR 要求至少一条验收标准", "warn"); return; }
     s.busy = "create"; s.actionError = null; render();
     try {
-      const created = await ctx.api.createTask({
+      const createdView = await ctx.api.createTask({
         title: f.title.trim(), department_id: f.department_id, owner_id: f.owner_id,
         perspective: f.perspective, priority: f.priority,
         deadline: f.deadline ? f.deadline + "T23:59:59Z" : "",
         acceptance: f.acceptance.split("\n").map(function (x) { return x.trim(); }).filter(Boolean),
         high_risk: f.high_risk
       });
+      const created = (createdView && createdView.task) ? createdView.task : createdView;
       s.busy = ""; s.createOpen = false; s.form = newForm();
       toast("任务已创建：" + created.id, "ok");
       go(created.id);
@@ -255,11 +256,11 @@ export function mount(ctx, route) {
       el("div", { class: "card-title" }, el("span", { text: task.title || "—" }), statusBadge(task.status, TASK_STATUS),
         badge(task.priority || "P2", task.priority === "P0" ? "bad" : task.priority === "P1" ? "warn" : "")),
       el("div", { class: "card-meta", attrs: { style: "margin-top:6px" } },
-        el("span", { text: "部门：" + (dept ? dept.name : (task.department_id || "—")) }),
+        el("span", { text: "部门：" + (dept ? dept.name : nameOfDept(task.department_id)) }),
         el("span", { text: " · 视角：" + (task.perspective || "—") }),
-        el("span", { text: " · owner：" + (task.owner_id || "—") }),
-        el("span", { text: " · reviewer：" + (task.reviewer_id || "—") }),
-        el("span", { text: " · approver：" + (task.approver_id || "—") })),
+        el("span", { text: " · owner：" + nameOfAgent(task.owner_id) }),
+        el("span", { text: " · reviewer：" + nameOfAgent(task.reviewer_id) }),
+        el("span", { text: " · approver：" + nameOfAgent(task.approver_id) })),
       el("div", { class: "card-meta", attrs: { style: "margin-top:2px" } },
         el("span", { text: "截止：" + (task.deadline ? fmtDateTime(task.deadline) : "—") }),
         el("span", { text: " · 预算：" + (task.budget_cost ? "¥" + task.budget_cost : (task.budget_tokens || 0) + " tokens") }),
@@ -349,10 +350,18 @@ export function mount(ctx, route) {
     });
     if (allowed.length) row.appendChild(reason);
 
+    const terminal = task.status === "done" || task.status === "canceled" || task.status === "failed";
+    const flags = (function () { try { return JSON.parse(task.flags || "{}"); } catch (e) { return {}; } })();
+    if (flags.g3_approval_id) {
+      row.appendChild(el("span", { class: "grow" }));
+      row.appendChild(badge("G3 已提交：" + flags.g3_approval_id, "accent"));
+      return row;
+    }
     const ready = criteria.length > 0 && criteria.every(function (c) {
       return c.evidence && c.evidence.trim() && c.supervisor_verdict !== "changes_requested";
     });
     row.appendChild(el("span", { class: "grow" }));
+    if (terminal) return row;
     row.appendChild(el("button", {
       class: "btn btn-sm" + (ready ? " btn-primary" : ""),
       attrs: { type: "button", disabled: ctx.demo || !ready || s.busy === "g3",
@@ -363,6 +372,14 @@ export function mount(ctx, route) {
   }
 
   // ---------- 动作 ----------
+  // 状态机权限：approved 只能由 reviewer/approver/主管做，changes_requested 只能 reviewer/主管。
+  // 默认 actor 是助理（代表用户），这两类动作显式以任务上的 reviewer/approver 身份发起；核心仍会校验。
+  function actorForTransition(task, to) {
+    if (to === "approved") return task.approver_id || task.reviewer_id || "";
+    if (to === "changes_requested") return task.reviewer_id || "";
+    return "";
+  }
+
   async function transition(task, to) {
     if (s.busy) return;
     if (to === "blocked" && !String(s.reason || "").trim()) { toast("标记阻塞必须写原因", "warn"); return; }
@@ -372,7 +389,10 @@ export function mount(ctx, route) {
     }
     s.busy = "transition"; s.actionError = null; render();
     try {
-      await ctx.api.transitionTask(task.id, { to: to, reason: s.reason || "", evidence: "" });
+      await ctx.api.transitionTask(task.id, {
+        to: to, reason: s.reason || "", evidence: "",
+        actor_agent_id: actorForTransition(task, to)
+      });
       s.busy = "";
       toast("已转换：" + (TASK_STATUS[to] || [to])[0], "ok");
       loadDetail(task.id);

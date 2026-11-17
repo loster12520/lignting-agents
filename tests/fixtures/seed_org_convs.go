@@ -59,11 +59,11 @@ func seedOrgConversations(ctx context.Context, tx *sql.Tx, now string, r *SeedRe
 	}
 	for conv, members := range deptMembers {
 		for _, m := range members {
-			ptype := "agent"
+			ptype, role := "agent", "member"
 			if m == OwnerID {
-				ptype = "user"
+				ptype, role = "user", "observer"
 			}
-			if err := addMember(conv, ptype, m, "member"); err != nil {
+			if err := addMember(conv, ptype, m, role); err != nil {
 				return err
 			}
 		}

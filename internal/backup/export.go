@@ -2,12 +2,9 @@ package backup
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,27 +46,27 @@ var exportTables = []string{
 
 // ExportTable is one table in the structured export.
 type ExportTable struct {
-	Columns []string `json:"columns"`
-	Rows []map[string]any `json:"rows"`
+	Columns []string         `json:"columns"`
+	Rows    []map[string]any `json:"rows"`
 }
 
 // ExportData is the export.json document.
 type ExportData struct {
-	Format string `json:"format"`
-	FormatVersion int `json:"format_version"`
-	AppVersion string `json:"app_version"`
-	SchemaVersion int `json:"schema_version"`
-	ExportedAt string `json:"exported_at"`
-	Redacted bool `json:"redacted"`
-	Tables map[string]ExportTable `json:"tables"`
-	Counts map[string]int `json:"counts"`
+	Format        string                 `json:"format"`
+	FormatVersion int                    `json:"format_version"`
+	AppVersion    string                 `json:"app_version"`
+	SchemaVersion int                    `json:"schema_version"`
+	ExportedAt    string                 `json:"exported_at"`
+	Redacted      bool                   `json:"redacted"`
+	Tables        map[string]ExportTable `json:"tables"`
+	Counts        map[string]int         `json:"counts"`
 }
 
 // ExportProgress is emitted once per table when a progress callback is set.
 type ExportProgress struct {
-	Phase string
-	Table string
-	Rows int
+	Phase  string
+	Table  string
+	Rows   int
 	Tables int
 }
 
@@ -83,12 +80,12 @@ type ExportOptions struct {
 
 // ExportResult describes a completed export directory.
 type ExportResult struct {
-	Dir string `json:"dir"`
-	Files []string `json:"files"`
-	Counts map[string]int `json:"counts"`
-	Redacted bool `json:"redacted"`
-	SchemaVersion int `json:"schema_version"`
-	ExportedAt string `json:"exported_at"`
+	Dir           string         `json:"dir"`
+	Files         []string       `json:"files"`
+	Counts        map[string]int `json:"counts"`
+	Redacted      bool           `json:"redacted"`
+	SchemaVersion int            `json:"schema_version"`
+	ExportedAt    string         `json:"exported_at"`
 }
 
 // Export writes a redacted JSON+Markdown export below <dataDir>/exports.
@@ -159,14 +156,14 @@ func exportTo(ctx context.Context, dataDir, outDir string, opts ExportOptions) (
 	secrets := loadSecrets(dataDir)
 	exportedAt := store.Now()
 	ed := ExportData{
-		Format: ExportFormatName,
+		Format:        ExportFormatName,
 		FormatVersion: ExportFormatVersion,
-		AppVersion: config.Version,
+		AppVersion:    config.Version,
 		SchemaVersion: store.SchemaVersion,
-		ExportedAt: exportedAt,
-		Redacted: !opts.IncludeSensitive,
-		Tables: make(map[string]ExportTable, len(exportTables)),
-		Counts: make(map[string]int, len(exportTables)),
+		ExportedAt:    exportedAt,
+		Redacted:      !opts.IncludeSensitive,
+		Tables:        make(map[string]ExportTable, len(exportTables)),
+		Counts:        make(map[string]int, len(exportTables)),
 	}
 
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -212,12 +209,12 @@ func exportTo(ctx context.Context, dataDir, outDir string, opts ExportOptions) (
 		return nil, fmt.Errorf("publish export: %w", err)
 	}
 	return &ExportResult{
-		Dir: absOut,
-		Files: files,
-		Counts: ed.Counts,
-		Redacted: ed.Redacted,
+		Dir:           absOut,
+		Files:         files,
+		Counts:        ed.Counts,
+		Redacted:      ed.Redacted,
 		SchemaVersion: ed.SchemaVersion,
-		ExportedAt: exportedAt,
+		ExportedAt:    exportedAt,
 	}, nil
 }
 
@@ -359,14 +356,3 @@ func yesNo(b bool) string {
 	}
 	return "否"
 }
-
-// randomID is shared by export naming.
-func randomID() string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 10)
-	}
-	return hex.EncodeToString(b[:])
-}
-
-var _ = io.Discard

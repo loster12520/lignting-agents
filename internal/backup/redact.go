@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var sensitiveKeyRe = regexp.MustCompile(`(?i)^(api[_-]?key|key|token|password|passwd|secret|authorization|cookie|credential|access[_-]?key|private[_-]?key|client[_-]?secret)$`)
+var sensitiveKeyRe = regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|token|password|passwd|secret|authorization|cookie|credential)`)
 
 var secretValueRes = []*regexp.Regexp{
 	regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`),

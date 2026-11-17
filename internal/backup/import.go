@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,22 +24,22 @@ const (
 
 // TableImportStat is per-table import accounting.
 type TableImportStat struct {
-	Rows int `json:"rows"`
+	Rows     int `json:"rows"`
 	Inserted int `json:"inserted"`
-	Skipped int `json:"skipped"`
+	Skipped  int `json:"skipped"`
 }
 
 // ImportResult summarizes an import.
 type ImportResult struct {
-	DataDir string `json:"data_dir"`
-	Mode ImportMode `json:"mode"`
-	Tables map[string]TableImportStat `json:"tables"`
-	TotalInserted int `json:"total_inserted"`
-	TotalSkipped int `json:"total_skipped"`
-	AuditEntries int64 `json:"audit_entries"`
-	AuditChainVerified bool `json:"audit_chain_verified"`
-	Redacted bool `json:"redacted"`
-	Warnings []string `json:"warnings,omitempty"`
+	DataDir            string                     `json:"data_dir"`
+	Mode               ImportMode                 `json:"mode"`
+	Tables             map[string]TableImportStat `json:"tables"`
+	TotalInserted      int                        `json:"total_inserted"`
+	TotalSkipped       int                        `json:"total_skipped"`
+	AuditEntries       int64                      `json:"audit_entries"`
+	AuditChainVerified bool                       `json:"audit_chain_verified"`
+	Redacted           bool                       `json:"redacted"`
+	Warnings           []string                   `json:"warnings,omitempty"`
 }
 
 // Import validates and imports an export directory (or export.json) into
@@ -117,9 +116,9 @@ func Import(ctx context.Context, dataDir, exportPath string, mode ImportMode, co
 	}
 
 	result := &ImportResult{
-		DataDir: dir,
-		Mode: mode,
-		Tables: make(map[string]TableImportStat, len(ed.Tables)),
+		DataDir:  dir,
+		Mode:     mode,
+		Tables:   make(map[string]TableImportStat, len(ed.Tables)),
 		Redacted: ed.Redacted,
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -182,6 +181,8 @@ func Import(ctx context.Context, dataDir, exportPath string, mode ImportMode, co
 		result.AuditChainVerified = true
 	} else if !ed.Redacted {
 		return result, fmt.Errorf("%w: audit chain after import: %v", ErrCorrupt, auditErr)
+	} else {
+		result.Warnings = append(result.Warnings, "target audit chain is not valid; redacted audit rows were not imported")
 	}
 	return result, nil
 }
@@ -208,12 +209,12 @@ func tableColumns(ctx context.Context, tx *sql.Tx, table string) (map[string]boo
 	out := map[string]bool{}
 	for rows.Next() {
 		var (
-			cid int
-			name string
-			typ string
+			cid     int
+			name    string
+			typ     string
 			notNull int
-			dflt any
-			pk int
+			dflt    any
+			pk      int
 		)
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
 			return nil, fmt.Errorf("scan table_info %s: %w", table, err)
@@ -266,5 +267,3 @@ func isConflictErr(err error) bool {
 }
 
 func quoteIdent(s string) string { return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\"" }
-
-var _ = errors.Is

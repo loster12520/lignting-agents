@@ -76,16 +76,15 @@ func DetectStall(subs []Submission) bool {
 		return false
 	}
 	last := subs[len(subs)-1]
-	prev := subs[:len(subs)-1]
 	if last.Stance == "" {
 		return false
 	}
-	// 找上一轮同方的提交：简化规则——上一条 stance 相同即视为重复立场。
+	// 上一条立场相同，且本次没有引入此前未出现的证据 → 停滞。
 	previous := subs[len(subs)-2]
 	if previous.Stance != last.Stance {
 		return false
 	}
-	return !HasNewEvidence(prev[:len(prev)-1], last)
+	return !HasNewEvidence(subs[:len(subs)-1], last)
 }
 
 // TimeboxExceeded 判断时间盒是否到期。

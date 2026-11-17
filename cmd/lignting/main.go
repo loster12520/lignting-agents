@@ -83,15 +83,23 @@ func main() {
 		log.Fatalf("初始化工具注册表失败: %v", err)
 	}
 
-	memSvc, err := memory.NewService(memory.Options{Repo: memory.NewStoreRepo(st)})
+	memSvc, err := memory.NewService(memory.Options{Repo: memory.NewStoreRepo(st), Config: memory.DefaultConfig()})
 	if err != nil {
 		log.Fatalf("初始化记忆服务失败: %v", err)
 	}
+
+	budget := core.NewBudgetGuard(st, core.BudgetPolicy{
+		DailyCNY:   cfg.DailyBudgetCNY,
+		MonthlyCNY: cfg.MonthlyBudgetCNY,
+		WarnRatio:  0.8,
+	})
 
 	rt, err := core.NewRuntime(core.Options{
 		Store:          st,
 		Provider:       newDynamicProvider(cfg),
 		Memory:         coreMemoryInjector{svc: memSvc},
+		Budget:         budget,
+		Settings:       st,
 		Tools:          core.NewToolRegistry(toolExecutor{reg: toolsReg}),
 		Model:          cfg.Model,
 		OwnerName:      ownerName(ctx, st, cfg),
@@ -106,10 +114,12 @@ func main() {
 
 	srv := platform.New(cfg, st)
 	srv.SetMessageSink(coreSink{rt: rt})
+	srv.SetMemoryService(memSvc)
 	orgSvc := core.NewOrgService(st, rt)
 	srv.SetOrgService(orgSvc)
 	workSvc := core.NewWorkService(st)
 	srv.SetWorkService(workSvc)
+	srv.SetDebateService(core.NewDebateService(st))
 	wireActions(rt, orgSvc, workSvc, st)
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,

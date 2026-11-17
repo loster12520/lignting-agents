@@ -10,5 +10,8 @@ import (
 // 这些断言故意放在 cmd，任何接口漂移都会在 go build 时立刻暴露。
 var (
 	_ core.Store       = (*store.Store)(nil)
+	_ core.DebateStore = (*store.Store)(nil)
+	_ core.UsageSumer  = (*store.Store)(nil)
 	_ write.Repository = (*store.Store)(nil)
+	_ write.AuditSink  = (*store.Store)(nil)
 )

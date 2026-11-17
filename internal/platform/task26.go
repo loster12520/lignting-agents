@@ -87,6 +87,12 @@ func (s *Server) RunSchedulesOnce(ctx context.Context) (int, error) {
 		}
 		n++
 	}
+	// R8 预算告警投影（判定在 core；这里只把事件变成收件箱通知）。
+	if created, err := s.scanBudgetEvents(ctx); err != nil && ctx.Err() == nil {
+		s.logf("预算告警扫描失败: %v", err)
+	} else {
+		n += created
+	}
 	return n, nil
 }
 

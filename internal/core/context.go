@@ -34,6 +34,7 @@ type ContextInput struct {
 	CurrentMessage domain.Message
 	Recent         []domain.Message
 	Memories       []domain.Memory
+	MemorySnapshot *MemorySnapshot
 	External       []ExternalBlock
 	HumanDirective string
 	AdaptivePrompt string
@@ -42,12 +43,15 @@ type ContextInput struct {
 
 // ContextReport 记录本次装配做了什么（写入 context_snapshots，便于回放）。
 type ContextReport struct {
-	Sections              []string `json:"sections"`
-	EstimatedPromptTokens int      `json:"estimated_prompt_tokens"`
-	Dropped               []string `json:"dropped"`
-	RecentUsed            int      `json:"recent_used"`
-	RecentDropped         int      `json:"recent_dropped"`
-	MemoryIDs             []string `json:"memory_ids"`
+	Sections              []string              `json:"sections"`
+	EstimatedPromptTokens int                   `json:"estimated_prompt_tokens"`
+	Dropped               []string              `json:"dropped"`
+	RecentUsed            int                   `json:"recent_used"`
+	RecentDropped         int                   `json:"recent_dropped"`
+	MemoryIDs             []string              `json:"memory_ids"`
+	MemoryEntries         []MemoryEntrySnapshot `json:"memory_entries,omitempty"`
+	MemoryTokens          int64                 `json:"memory_tokens"`
+	MemoryDegradedReason  string                `json:"memory_degraded_reason,omitempty"`
 }
 
 // Assembled 是装配结果：发给模型的 messages + 审计报告。
@@ -101,6 +105,16 @@ func (a *Assembler) Assemble(in ContextInput) Assembled {
 	recent := a.mapRecent(in.Recent, in.CurrentMessage, in.Conversation)
 	externals := in.External
 	report := ContextReport{MemoryIDs: memoryIDs(in.Memories)}
+	if in.MemorySnapshot != nil {
+		report.MemoryEntries = in.MemorySnapshot.Entries
+		report.MemoryTokens = in.MemorySnapshot.Tokens
+		report.MemoryDegradedReason = in.MemorySnapshot.DegradeReason
+		if len(report.MemoryIDs) == 0 {
+			for _, e := range in.MemorySnapshot.Entries {
+				report.MemoryIDs = append(report.MemoryIDs, e.ID)
+			}
+		}
+	}
 	for _, s := range sections {
 		if strings.TrimSpace(s.text) != "" {
 			report.Sections = append(report.Sections, s.name)
