@@ -59,7 +59,7 @@ await import("../app.js");
 await wait(200);
 
 ok("外壳已挂载 .app", count(".app") === 1, "app children=" + app.childNodes.length);
-ok("侧栏 12 个导航项", count(".nav-item") === 12, String(count(".nav-item")));
+ok("侧栏 14 个导航项", count(".nav-item") === 14, String(count(".nav-item")));
 const convs = count(".conv-item");
 ok("会话列表渲染（>=8）", convs >= 8, String(convs));
 ok("默认进入助理私聊", (location.hash || "").indexOf("conv_dm_assistant") >= 0, location.hash);
@@ -99,6 +99,16 @@ ok("决策日志为只读输入", document.querySelector(".composer-input").disa
 
 await goto("#/timeline");
 ok("变更时间线页渲染", textOf(document.querySelector(".page")).indexOf("时间线") >= 0, textOf(document.querySelector(".page")).slice(0, 40));
+
+await goto("#/inbox");
+ok("收件箱页渲染分级通知", textOf(document.querySelector(".page")).indexOf("收件箱") >= 0 && count(".card") >= 3, "cards=" + count(".card"));
+
+await goto("#/agents");
+ok("Agent 管理页渲染", textOf(document.querySelector(".page")).indexOf("Agent 管理") >= 0 && count(".card") >= 3, "cards=" + count(".card"));
+
+await goto("#/agents?id=agent_eng_api");
+await wait(120);
+ok("Agent 角色卡/最近行为详情", textOf(document.querySelector(".page")).indexOf("角色卡") >= 0, textOf(document.querySelector(".page")).slice(-80));
 
 await goto("#/discussions");
 ok("讨论/辩论/决策页 3 个 tab", count(".tab") === 3, String(count(".tab")));

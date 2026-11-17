@@ -276,12 +276,35 @@ export function createDemoApi() {
       });
     });
   })();
+  auditRows.push({
+    seq: 200, actor_type: "user", actor_id: "user_owner", action: "admin.emergency_stop",
+    object_type: "system", object_id: "emergency_stop", result: "ok",
+    prev_hash: "sha256:prev", hash: "sha256:emergency", created_at: iso(-4 * 3600e3),
+    detail: jsonText({ emergency_stop: false })
+  });
 
   const usageRows = [
     { id: "u1", agent_id: "agent_assistant", department_id: "", model: "deepseek-flash", prompt_tokens: 18240, completion_tokens: 6210, cached_tokens: 8000, cost: 0.62, created_at: iso(-3600e3) },
     { id: "u2", agent_id: "agent_eng_api", department_id: "dept_eng", model: "deepseek-flash", prompt_tokens: 24100, completion_tokens: 9800, cached_tokens: 12000, cost: 0.94, created_at: iso(-2 * 3600e3) },
     { id: "u3", agent_id: "agent_pm_lead", department_id: "dept_product", model: "deepseek-flash", prompt_tokens: 9600, completion_tokens: 4100, cached_tokens: 3000, cost: 0.38, created_at: iso(-3 * 3600e3) }
   ];
+
+  const notifications = [
+    { id: "notif_1", level: "need_decide", title: "G2 审批：限流默认配额", body: "研发部请求把默认配额从 60/min 调到 120/min，属于高风险变更。请到审批中心处理。", conversation_id: "conv_proj", object_type: "approval", object_id: "apr_demo_3", status: "unread", created_at: iso(-12 * 60e3) },
+    { id: "notif_2", level: "blocking", title: "测试部预算阻塞", body: "测试部日预算已到 100%，新任务被暂停；恢复或追加预算前不会接新 turn。", conversation_id: "conv_dept_qa", object_type: "agent", object_id: "agent_qa_case", status: "unread", created_at: iso(-25 * 60e3) },
+    { id: "notif_3", level: "need_know", title: "挑战单 C-9 已回应", body: "研发部接受「限流窗口重启丢失」挑战，提交 v2 方案；评审仍在进行。", conversation_id: "conv_cross", object_type: "review", object_id: "rev_demo_9", status: "unread", created_at: iso(-50 * 60e3) },
+    { id: "notif_4", level: "fyi", title: "T-18 页面提示已进入 in_progress", body: "小页开始实现 429 的可读提示；无需你决定。", conversation_id: "conv_dept_eng", object_type: "task", object_id: "task_demo_t18", status: "unread", created_at: iso(-80 * 60e3) },
+    { id: "notif_5", level: "need_decide", title: "T-17 验收证据待确认", body: "接口限流已完成实现，测试证据已提交，等待你确认是否进入 G3。", conversation_id: "conv_task", object_type: "task", object_id: "task_demo_t17", status: "read", created_at: iso(-3 * 3600e3) },
+    { id: "notif_6", level: "fyi", title: "决策 D-3 已记录", body: "限流采用滑动窗口 + 冷启动保护；异议与理由已归档。", conversation_id: "conv_log", object_type: "decision", object_id: "dec_demo_3", status: "dismissed", created_at: iso(-26 * 3600e3) }
+  ];
+
+  let budgetState = {
+    daily_cny: 20,
+    monthly_cny: 300,
+    departments: { dept_eng: 8, dept_qa: 3 },
+    tasks: { task_demo_t17: 5 }
+  };
+  let emergencyStopEnabled = false;
 
   const writes = [
     { id: "w1", agent_id: "agent_eng_api", task_id: "task_demo_t17", path: "internal/platform/ratelimit.go", base_hash: "sha256:aa11", status: "applied", diff: "+ 60 行", branch: "main", commit_sha: "", created_at: iso(-50 * 60e3) },
@@ -482,8 +505,32 @@ export function createDemoApi() {
 
     login: async function () { return this.bootstrap(); },
     logout: async function () { return { ok: true }; },
-    settings: async function () { return { daily_budget_cny: 20, monthly_budget_cny: 300, model: "deepseek-flash", api_key_set: false }; },
+    settings: async function () { return { daily_budget_cny: budgetState.daily_cny, monthly_budget_cny: budgetState.monthly_cny, model: "deepseek-flash", api_key_set: false }; },
     saveSettings: async function () { return { ok: true }; },
+    budgets: async function () { return JSON.parse(JSON.stringify(budgetState)); },
+    saveBudgets: async function (payload) {
+      const p = payload || {};
+      if (typeof p.daily_cny === "number") budgetState.daily_cny = p.daily_cny;
+      if (typeof p.monthly_cny === "number") budgetState.monthly_cny = p.monthly_cny;
+      if (p.departments && typeof p.departments === "object") {
+        Object.keys(p.departments).forEach(function (k) { budgetState.departments[k] = p.departments[k]; });
+      }
+      return JSON.parse(JSON.stringify(budgetState));
+    },
+    notifications: async function (params) {
+      const p = params || {};
+      let arr = notifications.slice();
+      if (p.status) arr = arr.filter(function (n) { return n.status === p.status; });
+      const limit = parseInt(p.limit, 10) || 100;
+      return { items: arr.slice(0, limit), total: arr.length, next: "" };
+    },
+    notificationStatus: async function (id, payload) {
+      const p = payload || {};
+      const n = notifications.filter(function (x) { return x.id === id; })[0];
+      if (!n) throw unsupported("通知不存在");
+      if (p.status) n.status = String(p.status);
+      return n;
+    },
 
     conversations: async function () { return { items: sortedConversations(), total: conversations.length, next: "" }; },
     conversation: async function (id) {
@@ -535,7 +582,15 @@ export function createDemoApi() {
       for (let i = 0; i < agents.length; i++) if (agents[i].id === id) return agents[i];
       throw unsupported("Agent 不存在");
     },
-    agentAction: async function () { throw unsupported("演示模式不支持 Agent 操作：请用真实后端（18794/本机实例）"); },
+    agentAction: async function (id, action) {
+      const a = agents.filter(function (x) { return x.id === id; })[0];
+      if (!a) throw unsupported("Agent 不存在");
+      if (action === "pause") a.status = "paused";
+      else if (action === "resume") a.status = "idle";
+      else if (action === "stop") a.status = "idle";
+      else throw unsupported("演示模式不支持该 Agent 动作");
+      return a;
+    },
 
     latestIntent: async function () {
       const e = new Error("演示模式没有真实意图卡");
@@ -610,13 +665,51 @@ export function createDemoApi() {
     closeDebate: async function () { throw unsupported("演示模式不支持关闭辩论：请用真实后端"); },
     reopenDebate: async function () { throw unsupported("演示模式不支持重开辩论：请用真实后端"); },
 
-    audit: async function () { return { items: auditRows, total: auditRows.length, next: "" }; },
-    usage: async function () { return { items: usageRows, total: usageRows.length, next: "" }; },
+    audit: async function (params) {
+      const p = params || {};
+      let arr = auditRows.slice();
+      if (p.action) arr = arr.filter(function (a) { return a.action === p.action; });
+      if (p.actor_type) arr = arr.filter(function (a) { return a.actor_type === p.actor_type; });
+      if (p.actor_id) arr = arr.filter(function (a) { return a.actor_id === p.actor_id; });
+      if (p.object_type) arr = arr.filter(function (a) { return a.object_type === p.object_type; });
+      const limit = parseInt(p.limit, 10) || 100;
+      arr.sort(function (a, b) { return (b.seq || 0) - (a.seq || 0); });
+      return { items: arr.slice(0, limit), total: arr.length, next: "" };
+    },
+    usage: async function (params) {
+      const p = params || {};
+      const from = p.from ? new Date(p.from).getTime() : 0;
+      const to = p.to ? new Date(p.to).getTime() : 0;
+      let rows = usageRows.slice();
+      if (p.agent_id) rows = rows.filter(function (u) { return u.agent_id === p.agent_id; });
+      if (p.department_id) rows = rows.filter(function (u) { return u.department_id === p.department_id; });
+      rows = rows.filter(function (u) {
+        const t = new Date(u.created_at).getTime();
+        if (from && t < from) return false;
+        if (to && t > to) return false;
+        return true;
+      });
+      if (!p.group_by) {
+        let pt = 0, ct = 0, cache = 0, cost = 0;
+        rows.forEach(function (u) { pt += u.prompt_tokens || 0; ct += u.completion_tokens || 0; cache += u.cached_tokens || 0; cost += u.cost || 0; });
+        return { PromptTokens: pt, CompletionTokens: ct, CachedTokens: cache, Cost: cost };
+      }
+      return { items: rows, total: rows.length, next: "" };
+    },
     writes: async function () { return { items: writes, total: writes.length, next: "" }; },
 
     reindex: async function () { throw unsupported("演示模式不支持重建索引（R8 交付）"); },
     backup: async function () { throw unsupported("演示模式不支持备份（R8 交付）"); },
-    emergencyStop: async function () { throw unsupported("演示模式不支持紧急停止（R8 交付）"); },
+    emergencyStop: async function (enabled) {
+      emergencyStopEnabled = enabled === undefined ? true : !!enabled;
+      auditRows.push({
+        seq: 201 + auditRows.length, actor_type: "user", actor_id: "user_owner", action: "admin.emergency_stop",
+        object_type: "system", object_id: "emergency_stop", result: "ok",
+        prev_hash: "sha256:prev", hash: "sha256:emergency" + auditRows.length,
+        created_at: iso(0), detail: jsonText({ emergency_stop: emergencyStopEnabled })
+      });
+      return { emergency_stop: emergencyStopEnabled };
+    },
 
     subscribeEvents: function (fn) {
       subscribers.add(fn);

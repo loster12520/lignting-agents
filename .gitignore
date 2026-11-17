@@ -3,6 +3,7 @@
 /lignting.exe
 /dist/
 /bin/
+/tests/bin/
 
 # runtime data
 /data/

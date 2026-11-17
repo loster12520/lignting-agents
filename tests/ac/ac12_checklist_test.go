@@ -5,6 +5,7 @@ package ac
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -270,7 +271,170 @@ func TestAC12SupervisorChecklistAndSampling(t *testing.T) {
 
 	t.Log("AC-12 R4 passed: checklist blocks G3, complete G3 card, human approve, self-approve rejected, done only after G3")
 	t.Run("human_sampling_and_abnormal_approve_rate_FR_REV_05", func(t *testing.T) {
-		SkipSkeleton(t, "AC-12 human sampling / abnormal approve-rate hint", "R8", "FR-REV-05 抽检 API 尚未实现")
+		ctx := context.Background()
+		// Author dev A, reviewer test employee: create one artifact + five
+		// approved verdicts so the reviewer×author pair hits 5/5 = 100%.
+		var art struct {
+			Artifact struct {
+				ID string `json:"id"`
+			} `json:"artifact"`
+			Version struct {
+				ID string `json:"id"`
+			} `json:"version"`
+		}
+		h.PostData(t, "/api/artifacts", map[string]any{
+			"type": "code", "title": "AC-12 抽检对象", "task_id": fixtures.TaskID,
+			"department_id": fixtures.DeptDevID, "content": "package ac12\n", "actor_agent_id": fixtures.AgentDevAID,
+		}, &art)
+		if art.Artifact.ID == "" || art.Version.ID == "" {
+			t.Fatalf("sampling artifact = %+v", art)
+		}
+		var reviewIDs []string
+		for i := 0; i < 5; i++ {
+			var review struct {
+				ID string `json:"id"`
+			}
+			h.PostData(t, "/api/reviews", map[string]any{
+				"artifact_id": art.Artifact.ID, "artifact_version_id": art.Version.ID,
+				"severity": "minor", "stance": "抽检样本",
+				"claim":    fmt.Sprintf("抽检样本 %d：实现与验收标准一致", i+1),
+				"evidence": "command:go test ./...", "impact": "低", "proposed_resolution": "无需返工",
+				"from_department": fixtures.DeptTestID, "to_department": fixtures.DeptDevID,
+				"actor_agent_id": fixtures.AgentTestEmpID,
+			}, &review)
+			if review.ID == "" {
+				t.Fatalf("review %d missing id", i)
+			}
+			var verdict struct {
+				ID string `json:"id"`
+			}
+			h.PostData(t, "/api/reviews/"+review.ID+"/verdicts", map[string]any{
+				"verdict": "approve", "checked": "逐条核对证据", "rationale": "通过",
+				"conditions": "[]", "residual_risk": "低", "actor_agent_id": fixtures.AgentTestEmpID,
+			}, &verdict)
+			reviewIDs = append(reviewIDs, review.ID)
+		}
+
+		// 5 approvals / 100% -> a hint (not auto-collusion judgement).
+		var quality struct {
+			Items []struct {
+				ReviewerID        string         `json:"reviewer_id"`
+				AuthorID          string         `json:"author_id"`
+				Total             int            `json:"total"`
+				Approvals         int            `json:"approvals"`
+				PassRate          float64        `json:"pass_rate"`
+				SamplingSuggested bool           `json:"sampling_suggested"`
+				Sampling          map[string]int `json:"sampling"`
+			} `json:"items"`
+		}
+		h.GetData(t, "/api/quality/reviews", &quality)
+		var pairFound bool
+		for _, st := range quality.Items {
+			if st.ReviewerID == fixtures.AgentTestEmpID && st.AuthorID == fixtures.AgentDevAID {
+				pairFound = true
+				if st.Total != 5 || st.Approvals != 5 || st.PassRate != 1 || !st.SamplingSuggested {
+					t.Fatalf("quality pair = %+v, want 5/5 100%% suggested", st)
+				}
+				if len(st.Sampling) != 0 {
+					t.Fatalf("sampling metrics before sampling = %+v", st.Sampling)
+				}
+			}
+		}
+		if !pairFound {
+			t.Fatalf("quality pair %s|%s not found: %+v", fixtures.AgentTestEmpID, fixtures.AgentDevAID, quality.Items)
+		}
+
+		var suggestions struct {
+			Items []struct {
+				ReviewerID string `json:"reviewer_id"`
+				AuthorID   string `json:"author_id"`
+				Total      int    `json:"total"`
+				Candidates []struct {
+					Review struct {
+						ID string `json:"id"`
+					} `json:"review"`
+					Verdict struct {
+						Verdict string `json:"verdict"`
+					} `json:"verdict"`
+				} `json:"candidates"`
+			} `json:"items"`
+		}
+		h.GetData(t, "/api/reviews/sampling/suggestions", &suggestions)
+		if len(suggestions.Items) == 0 {
+			t.Fatal("no sampling suggestions for 5x100%% pair")
+		}
+		sug := suggestions.Items[0]
+		if sug.ReviewerID != fixtures.AgentTestEmpID || sug.AuthorID != fixtures.AgentDevAID || len(sug.Candidates) != 5 {
+			t.Fatalf("sampling suggestion = %+v", sug)
+		}
+		for _, cand := range sug.Candidates {
+			if cand.Review.ID == "" || cand.Verdict.Verdict != "approve" {
+				t.Fatalf("sampling candidate = %+v", cand)
+			}
+		}
+
+		// Human sampling with an invalid result: audited, redacted, does not
+		// block the already-delivered task.
+		const secret = "sk-ac12-sampling-secret-123456"
+		var sampled struct {
+			Result string `json:"result"`
+		}
+		h.PostData(t, "/api/reviews/"+reviewIDs[0]+"/sampling", map[string]any{
+			"result": "invalid", "note": "证据不足 " + secret,
+		}, &sampled)
+		if sampled.Result != "invalid" {
+			t.Fatalf("sampling result = %+v", sampled)
+		}
+		h.GetData(t, "/api/quality/reviews", &quality)
+		for _, st := range quality.Items {
+			if st.ReviewerID == fixtures.AgentTestEmpID && st.AuthorID == fixtures.AgentDevAID {
+				if st.Sampling["invalid"] != 1 || st.Sampling["total"] != 1 || !st.SamplingSuggested {
+					t.Fatalf("sampling metrics after invalid = %+v suggested=%v", st.Sampling, st.SamplingSuggested)
+				}
+			}
+		}
+		h.ExpectStatus(t, "POST", "/api/reviews/"+reviewIDs[1]+"/sampling", map[string]any{"result": "bogus"}, 400)
+		h.ExpectStatus(t, "POST", "/api/reviews/rev_missing/sampling", map[string]any{"result": "valid"}, 404)
+		var taskAfter struct {
+			Task struct {
+				Status string `json:"status"`
+			} `json:"task"`
+		}
+		h.GetData(t, "/api/tasks/"+taskID, &taskAfter)
+		if taskAfter.Task.Status != "done" {
+			t.Fatalf("sampling blocked delivery: task status = %q, want done", taskAfter.Task.Status)
+		}
+
+		// Agent tokens cannot perform human sampling.
+		var tokenOut struct {
+			Token string `json:"token"`
+		}
+		h.PostData(t, "/api/agents/"+fixtures.AgentTestEmpID+"/token", map[string]any{}, &tokenOut)
+		req, _ := http.NewRequest(http.MethodPost, h.BaseURL+"/api/reviews/"+reviewIDs[2]+"/sampling", strings.NewReader(`{"result":"valid"}`))
+		req.Header.Set("Origin", h.BaseURL)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Lignting-Agent-Token", tokenOut.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("agent sampling request: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("agent sampling = %d, want 403", resp.StatusCode)
+		}
+
+		// Audit contains the sampling once, with the secret redacted.
+		audits, err := h.Store.QueryAudit(ctx, store.AuditFilter{Action: "review.sampling", Limit: 20})
+		if err != nil || len(audits) != 1 {
+			t.Fatalf("review.sampling audits = %d err=%v, want 1", len(audits), err)
+		}
+		if strings.Contains(audits[0].Detail, secret) {
+			t.Fatal("sampling audit leaked the secret")
+		}
+		if _, err := h.Store.VerifyAuditChain(ctx); err != nil {
+			t.Fatalf("audit chain: %v", err)
+		}
+		t.Log("AC-12 sampling passed: 5x100% hint, invalid metric, redacted audit, delivery not blocked")
 	})
 }
 

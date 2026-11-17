@@ -41,6 +41,9 @@ type Options struct {
 	Budget   *BudgetGuard
 	Settings SettingReader
 
+	// AC-14：临时桥查询；nil 时尝试从 Store 自动注入（*store.Store 满足）。
+	Bridges BridgeLookup
+
 	// AC-14：单轮 @ 触发 Agent 数上限（<=0 取默认 2）。
 	MentionBatchLimit int
 
@@ -74,6 +77,14 @@ func NewRuntime(opts Options) (*Runtime, error) {
 	}
 	if opts.Policy == nil {
 		opts.Policy = NewPolicy(opts.Store)
+	}
+	if opts.Bridges == nil {
+		if bridges, ok := opts.Store.(BridgeLookup); ok {
+			opts.Bridges = bridges
+		}
+	}
+	if opts.Bridges != nil {
+		opts.Policy.AttachBridges(opts.Bridges)
 	}
 	if opts.Actions == nil {
 		opts.Actions = NewActionExecutor(opts.Store)
@@ -239,6 +250,11 @@ func (rt *Runtime) getRunner(agentID string) *runner {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.runners[agentID]
+}
+
+// CanAgentMessage 是 platform 路由层的 core 校验入口：默认隔离 + 临时桥（不能绕过工具/审批）。
+func (rt *Runtime) CanAgentMessage(ctx context.Context, from, to domain.Agent, conv domain.Conversation) error {
+	return rt.opts.Policy.Route(ctx, from, to, conv)
 }
 
 // WaitIdle 等待某 Agent 的 mailbox 清空（测试、setup 与停止/重启后用）。

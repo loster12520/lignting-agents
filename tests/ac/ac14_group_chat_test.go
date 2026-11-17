@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/store"
 	"github.com/lignting/lignting-agents/tests/fixtures"
 )
@@ -200,6 +202,197 @@ func TestAC14GroupChatAndAgentLifecycle(t *testing.T) {
 
 	t.Log("AC-14 R3 passed: project/temp group, members/patch, messages searchable, observer join/leave, agent pause/resume, audit")
 	t.Run("mention_queue_dm_isolation_bridge_live_stop", func(t *testing.T) {
-		SkipSkeleton(t, "AC-14 @-reply queue / cross-dept DM rejection / expiring bridge / live-turn stop", "R6/R8", "需要 core 路由与 bridge API（R6）；运行中 turn 的停止由 core runtime 测试覆盖")
+		ctx := context.Background()
+		projectConv := h.Seed.Conversations[fixtures.ConversationProjectID]
+		dmConv := h.Seed.Conversations[fixtures.ConversationDMID]
+		postMention := func(convID string, mentions []string) domain.Message {
+			t.Helper()
+			var out struct {
+				Message domain.Message `json:"message"`
+			}
+			h.PostData(t, "/api/conversations/"+convID+"/messages", map[string]any{
+				"content": "@ 队列测试", "meta": map[string]any{"mentions": mentions},
+			}, &out)
+			return out.Message
+		}
+		enqueue := func(msg domain.Message) {
+			t.Helper()
+			if err := h.Runtime.EnqueueUserMessage(ctx, msg); err != nil {
+				t.Fatalf("enqueue mention: %v", err)
+			}
+		}
+		waitIdle := func(convID string) {
+			t.Helper()
+			waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := h.Runtime.WaitMentionQueueIdle(waitCtx, convID); err != nil {
+				t.Fatalf("mention queue not idle: %v", err)
+			}
+		}
+		agentMessages := func(convID string) []struct {
+			SenderID string `json:"sender_id"`
+			Content  string `json:"content"`
+		} {
+			t.Helper()
+			var out struct {
+				Items []struct {
+					SenderType string `json:"sender_type"`
+					SenderID   string `json:"sender_id"`
+					Content    string `json:"content"`
+				} `json:"items"`
+			}
+			h.GetData(t, "/api/conversations/"+convID+"/messages?limit=200", &out)
+			items := make([]struct {
+				SenderID string `json:"sender_id"`
+				Content  string `json:"content"`
+			}, 0)
+			for _, m := range out.Items {
+				if m.SenderType == "agent" {
+					items = append(items, struct {
+						SenderID string `json:"sender_id"`
+						Content  string `json:"content"`
+					}{SenderID: m.SenderID, Content: m.Content})
+				}
+			}
+			return items
+		}
+
+		// @ queue: order and per-turn limit (default 2) are observable.
+		before := len(agentMessages(projectConv))
+		enqueue(postMention(projectConv, []string{fixtures.AgentDevBID, fixtures.AgentDevAID, fixtures.AgentProdLeadID}))
+		waitIdle(projectConv)
+		msgs := agentMessages(projectConv)
+		if len(msgs) != before+2 {
+			t.Fatalf("mention replies = %d, want exactly 2 (limit)", len(msgs)-before)
+		}
+		if msgs[before].SenderID != fixtures.AgentDevBID || msgs[before+1].SenderID != fixtures.AgentDevAID {
+			t.Fatalf("mention order = %s,%s want dev_b,dev_a", msgs[before].SenderID, msgs[before+1].SenderID)
+		}
+		var status struct {
+			ConversationID string `json:"conversation_id"`
+			Running        bool   `json:"running"`
+			PendingJobs    int    `json:"pending_jobs"`
+			Limit          int    `json:"limit"`
+			Stopped        bool   `json:"stopped"`
+		}
+		h.GetData(t, "/api/conversations/"+projectConv+"/mention-queue", &status)
+		if status.ConversationID != projectConv || status.Limit != 2 || status.Running || status.PendingJobs != 0 {
+			t.Fatalf("mention queue status = %+v", status)
+		}
+		var stopped struct {
+			Stopped   bool `json:"stopped"`
+			Discarded int  `json:"discarded"`
+		}
+		h.PostData(t, "/api/conversations/"+projectConv+"/mention-queue/stop", map[string]any{}, &stopped)
+		if !stopped.Stopped {
+			t.Fatalf("mention queue stop = %+v", stopped)
+		}
+		// The queue is re-created for the next message after a stop.
+		enqueue(postMention(projectConv, []string{fixtures.AgentDevAID}))
+		waitIdle(projectConv)
+		if got := len(agentMessages(projectConv)); got != before+3 {
+			t.Fatalf("mention after stop = %d replies, want 3 total", got-before)
+		}
+
+		// Default isolation: a department lead cannot enter the owner DM ...
+		devLeadBefore := 0
+		for _, m := range agentMessages(dmConv) {
+			if m.SenderID == fixtures.AgentDevLeadID {
+				devLeadBefore++
+			}
+		}
+		enqueue(postMention(dmConv, []string{fixtures.AgentDevLeadID}))
+		waitIdle(dmConv)
+		afterDenied := 0
+		for _, m := range agentMessages(dmConv) {
+			if m.SenderID == fixtures.AgentDevLeadID {
+				afterDenied++
+			}
+		}
+		if afterDenied != devLeadBefore {
+			t.Fatalf("department lead got into owner DM without bridge: %d -> %d", devLeadBefore, afterDenied)
+		}
+
+		// ... until a lead_to_user bridge is opened; closing it restores isolation.
+		var bridge struct {
+			ID        string `json:"id"`
+			Status    string `json:"status"`
+			ExpiresAt string `json:"expires_at"`
+		}
+		h.PostData(t, "/api/bridges", map[string]any{
+			"scope": "lead_to_user", "from_type": "agent", "from_id": fixtures.AgentDevLeadID,
+			"to_type": "user", "to_id": fixtures.OwnerID,
+			"expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339), "reason": "AC-14 临时桥",
+		}, &bridge)
+		if bridge.ID == "" || bridge.Status != "active" {
+			t.Fatalf("bridge = %+v", bridge)
+		}
+		enqueue(postMention(dmConv, []string{fixtures.AgentDevLeadID}))
+		waitIdle(dmConv)
+		afterBridge := 0
+		for _, m := range agentMessages(dmConv) {
+			if m.SenderID == fixtures.AgentDevLeadID {
+				afterBridge++
+			}
+		}
+		if afterBridge != devLeadBefore+1 {
+			t.Fatalf("bridged lead reply = %d, want %d", afterBridge, devLeadBefore+1)
+		}
+		var closed struct {
+			Status string `json:"status"`
+		}
+		h.ExpectStatus(t, "DELETE", "/api/bridges/"+bridge.ID, nil, 200).Data(t, &closed)
+		if closed.Status != "closed" {
+			t.Fatalf("closed bridge = %+v", closed)
+		}
+		enqueue(postMention(dmConv, []string{fixtures.AgentDevLeadID}))
+		waitIdle(dmConv)
+		afterClose := 0
+		for _, m := range agentMessages(dmConv) {
+			if m.SenderID == fixtures.AgentDevLeadID {
+				afterClose++
+			}
+		}
+		if afterClose != afterBridge {
+			t.Fatalf("closed bridge still allows messages: %d -> %d", afterBridge, afterClose)
+		}
+
+		// A bridge expires automatically via the scheduler and is audited.
+		var expiring struct {
+			ID string `json:"id"`
+		}
+		h.PostData(t, "/api/bridges", map[string]any{
+			"scope": "cross_dept", "from_type": "department", "from_id": fixtures.DeptDevID,
+			"to_type": "department", "to_id": fixtures.DeptTestID,
+			"expires_at": time.Now().UTC().Add(time.Second).Format(time.RFC3339), "reason": "AC-14 到期桥",
+		}, &expiring)
+		time.Sleep(2500 * time.Millisecond)
+		if _, err := h.Platform.RunSchedulesOnce(ctx); err != nil {
+			t.Fatalf("run schedules: %v", err)
+		}
+		var expired struct {
+			Items []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"items"`
+		}
+		h.GetData(t, "/api/bridges?status=expired", &expired)
+		foundExpired := false
+		for _, item := range expired.Items {
+			if item.ID == expiring.ID && item.Status == "expired" {
+				foundExpired = true
+			}
+		}
+		if !foundExpired {
+			t.Fatalf("expiring bridge %s not expired: %+v", expiring.ID, expired.Items)
+		}
+		audits, err := h.Store.QueryAudit(ctx, store.AuditFilter{Action: "bridge.expire", Limit: 10})
+		if err != nil || len(audits) == 0 {
+			t.Fatalf("bridge.expire audit = %d err=%v", len(audits), err)
+		}
+		if _, err := h.Store.VerifyAuditChain(ctx); err != nil {
+			t.Fatalf("audit chain: %v", err)
+		}
+		t.Log("AC-14 mentions/bridge passed: order+limit+stop, DM isolation default-deny, bridge allow/close/expire, audit")
 	})
 }

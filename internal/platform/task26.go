@@ -156,6 +156,50 @@ func (s *Server) runSchedule(ctx context.Context, sc store.Schedule) error {
 			"department", deptID, "")
 		s.audit(ctx, domain.SenderSystem, "system", "department.degraded", "department", deptID, "ok", jsonDetail(map[string]any{"status": status}))
 		return err
+	case "snooze.expire":
+		key := payload["setting_key"]
+		if key == "" {
+			return nil
+		}
+		if err := s.store.DeleteSetting(ctx, key); err != nil {
+			return err
+		}
+		if payload["object_type"] == "notification" {
+			if _, err := s.store.SetNotificationStatus(ctx, payload["object_id"], "unread"); err != nil {
+				s.logf("snooze restore notification failed: %v", err)
+			}
+		}
+		s.audit(ctx, domain.SenderSystem, "system", "snooze.restore", payload["object_type"], payload["object_id"], "ok",
+			jsonDetail(map[string]any{"key": key}))
+		return nil
+	case "delegate.expire":
+		key := payload["setting_key"]
+		if key == "" {
+			return nil
+		}
+		if err := s.store.DeleteSetting(ctx, key); err != nil {
+			return err
+		}
+		s.audit(ctx, domain.SenderSystem, "system", "delegate.expire", "approval", payload["approval_id"], "ok", "{}")
+		return nil
+	case "bridge.expire":
+		bridgeID := payload["bridge_id"]
+		if bridgeID == "" {
+			return nil
+		}
+		bridge, changed, err := s.store.ExpireBridge(ctx, bridgeID)
+		if err != nil || !changed {
+			return err
+		}
+		_, err = s.notify(ctx, "need_know", "临时桥已到期关闭", "临时桥「"+bridge.Scope+"」("+bridge.FromType+":"+bridge.FromID+" → "+bridge.ToType+":"+bridge.ToID+") 已到期自动关闭。",
+			"bridge", bridge.ID, "")
+		_, _ = s.store.AppendEvent(ctx, domain.Event{
+			Type: "bridge.expired", ObjectType: "bridge", ObjectID: bridge.ID,
+			ActorType: domain.SenderSystem, ActorID: "system",
+			Payload: jsonDetail(map[string]any{"scope": bridge.Scope, "from": bridge.FromType + ":" + bridge.FromID, "to": bridge.ToType + ":" + bridge.ToID}),
+		})
+		s.audit(ctx, domain.SenderSystem, "system", "bridge.expire", "bridge", bridge.ID, "ok", jsonDetail(map[string]any{"expires_at": bridge.ExpiresAt}))
+		return err
 	default:
 		s.audit(ctx, domain.SenderSystem, "system", "schedule.skipped", "schedule", sc.ID, "ok", jsonDetail(map[string]any{"kind": sc.Kind}))
 		return nil

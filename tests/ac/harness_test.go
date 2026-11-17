@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -23,6 +24,7 @@ import (
 	"github.com/lignting/lignting-agents/internal/config"
 	"github.com/lignting/lignting-agents/internal/core"
 	"github.com/lignting/lignting-agents/internal/deepseek"
+	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/memory"
 	"github.com/lignting/lignting-agents/internal/platform"
 	"github.com/lignting/lignting-agents/internal/store"
@@ -34,27 +36,30 @@ import (
 // 127.0.0.1:0 and an HTTP client with a cookie jar. Tests that need seeded
 // departments/tasks call h.SeedDefaults() or pass WithSeed().
 type Harness struct {
-	T            *testing.T
-	DataDir      string
-	Cfg          config.Config
-	Store        *store.Store
-	Platform     *platform.Server
-	Server       *http.Server
-	BaseURL      string
-	Client       *Client
-	Seed         *fixtures.SeedResult
-	Faults       fixtures.Faults
-	Mock         bool
-	CoreServices bool
-	Runtime      *core.Runtime
-	stopSrv      func()
+	T              *testing.T
+	DataDir        string
+	Cfg            config.Config
+	Store          *store.Store
+	Platform       *platform.Server
+	Server         *http.Server
+	BaseURL        string
+	Client         *Client
+	Seed           *fixtures.SeedResult
+	Faults         fixtures.Faults
+	Mock           bool
+	CoreServices   bool
+	Runtime        *core.Runtime
+	Memory         *memory.Service
+	MemoryDisabled bool
+	stopSrv        func()
 }
 
 type harnessConfig struct {
-	modelMode    string
-	faults       fixtures.Faults
-	seed         bool
-	coreServices bool
+	modelMode      string
+	faults         fixtures.Faults
+	seed           bool
+	coreServices   bool
+	memoryDisabled bool
 }
 
 // HarnessOption customizes NewHarness.
@@ -84,6 +89,13 @@ func WithSeed() HarnessOption {
 // one through h.Runtime.
 func WithCoreServices() HarnessOption {
 	return func(c *harnessConfig) { c.coreServices = true }
+}
+
+// WithMemoryDisabled injects the memory service with Enabled=false so tests can
+// assert the documented graceful degradation (manual + task only) instead of a
+// silent failure.
+func WithMemoryDisabled() HarnessOption {
+	return func(c *harnessConfig) { c.memoryDisabled = true }
 }
 
 // NewHarness starts an isolated in-process acceptance environment.
@@ -126,7 +138,7 @@ func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock, CoreServices: hc.coreServices}
+	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock, CoreServices: hc.coreServices, MemoryDisabled: hc.memoryDisabled}
 	if hc.faults.Enabled() {
 		path, werr := fixtures.WriteFaults(cfg.DataDir, hc.faults)
 		if werr != nil {
@@ -154,7 +166,22 @@ func (h *Harness) Start() {
 	srv := platform.New(h.Cfg, h.Store)
 	h.Platform = srv
 	if h.CoreServices {
-		rt, rerr := core.NewRuntime(core.Options{Store: h.Store, Provider: deepseek.NewMock()})
+		memSvc, err := memory.NewService(memory.Options{
+			Repo:   memory.NewStoreRepo(h.Store),
+			Config: memory.Config{Enabled: !h.MemoryDisabled},
+		})
+		if err != nil {
+			h.T.Fatalf("memory service: %v", err)
+		}
+		h.Memory = memSvc
+		srv.SetMemoryService(memSvc)
+		guard := core.NewBudgetGuard(h.Store, core.BudgetPolicy{
+			DailyCNY: h.Cfg.DailyBudgetCNY, MonthlyCNY: h.Cfg.MonthlyBudgetCNY, WarnRatio: 0.8,
+		}, h.Store)
+		rt, rerr := core.NewRuntime(core.Options{
+			Store: h.Store, Provider: deepseek.NewMock(), Settings: h.Store, Budget: guard,
+			Memory: memoryInjector{svc: memSvc},
+		})
 		if rerr != nil {
 			h.T.Fatalf("core runtime: %v", rerr)
 		}
@@ -162,14 +189,7 @@ func (h *Harness) Start() {
 		srv.SetOrgService(core.NewOrgService(h.Store, rt))
 		srv.SetWorkService(core.NewWorkService(h.Store))
 		srv.SetDebateService(core.NewDebateService(h.Store))
-		memSvc, err := memory.NewService(memory.Options{
-			Repo:   memory.NewStoreRepo(h.Store),
-			Config: memory.Config{Enabled: true},
-		})
-		if err != nil {
-			h.T.Fatalf("memory service: %v", err)
-		}
-		srv.SetMemoryService(memSvc)
+		srv.SetMentionQueueService(rt)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -343,6 +363,47 @@ func (c *Client) SetCSRF(token string) { c.csrf = token }
 // Get performs an authenticated GET.
 func (c *Client) Get(path string) (*Response, error) {
 	return c.Do(context.Background(), http.MethodGet, path, nil)
+}
+
+// PostMultipart uploads one file plus optional form fields (attachments).
+func (c *Client) PostMultipart(path, field, filename string, content []byte, fields map[string]string) (*Response, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		if err := w.WriteField(k, v); err != nil {
+			return nil, err
+		}
+	}
+	part, err := w.CreateFormFile(field, filename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(content); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.h.BaseURL+path, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Origin", c.origin)
+	req.Header.Set("Accept", "application/json")
+	if c.csrf != "" {
+		req.Header.Set("X-Lignting-CSRF", c.csrf)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: b}, nil
 }
 
 // PostJSON performs a JSON write with CSRF + Origin headers.
@@ -613,4 +674,53 @@ func WaitFor(t *testing.T, timeout, interval time.Duration, fn func() error) {
 		time.Sleep(interval)
 	}
 	t.Fatalf("condition not met within %s: %v", timeout, last)
+}
+
+// memoryInjector adapts memory.Service to core.MemoryInjector +
+// core.MemorySnapshotter (mirrors cmd/lignting/memory.go; tests cannot import
+// package main).
+type memoryInjector struct{ svc *memory.Service }
+
+func (m memoryInjector) Inject(ctx context.Context, q core.MemoryQuery) ([]domain.Memory, error) {
+	return m.svc.Inject(ctx, q.Agent, q.ConversationID, q.TaskID, q.Limit)
+}
+
+func (m memoryInjector) InjectWithSnapshot(ctx context.Context, q core.MemoryQuery) (*core.MemorySnapshot, error) {
+	snap, err := m.svc.InjectWithSnapshot(ctx, memory.InjectionRequest{
+		TurnID: q.TurnID, AgentID: q.Agent.ID, AgentKind: q.Agent.Kind,
+		DepartmentID: q.Agent.DepartmentID, TaskID: q.TaskID, ConversationID: q.ConversationID,
+		Model: q.Model, TaskBrief: q.TaskBrief, EffectiveInputTokens: q.EffectiveInputTokens,
+		RecentMessages: q.RecentMessages, RecentTokens: q.RecentTokens,
+		ManualScope: q.ManualScope, IncludeManual: q.IncludeManual, IncludeArchives: q.IncludeArchives,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &core.MemorySnapshot{
+		Estimated: snap.Estimated, Degraded: snap.Degraded, DegradeReason: snap.DegradeReason,
+		CreatedAt: snap.CreatedAt,
+	}
+	for _, entry := range snap.Memories {
+		out.Entries = append(out.Entries, core.MemoryEntrySnapshot{
+			ID: entry.ID, EntityType: entry.EntityType, EntityKey: entry.EntityKey,
+			Version: entry.Version, Summary: entry.Summary, Source: entry.Source,
+			Visibility: entry.Visibility, Confidence: entry.Confidence,
+			Pinned: entry.Pinned, Tokens: entry.Tokens, Reason: entry.Reason,
+		})
+		out.Tokens += entry.Tokens
+	}
+	for _, dropped := range snap.Dropped {
+		out.Dropped = append(out.Dropped, core.MemoryDroppedSnapshot{
+			ID: dropped.ID, EntityType: dropped.EntityType, EntityKey: dropped.EntityKey,
+			Reason: dropped.Reason, Tokens: dropped.Tokens,
+		})
+	}
+	if snap.Manual != nil {
+		out.ManualVersion = snap.Manual.Version
+		out.ManualTokens = snap.Manual.Tokens
+	}
+	if snap.Task != nil {
+		out.TaskTokens = snap.Task.Tokens
+	}
+	return out, nil
 }

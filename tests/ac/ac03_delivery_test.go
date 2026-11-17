@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lignting/lignting-agents/internal/store"
+	"github.com/lignting/lignting-agents/internal/write"
 	"github.com/lignting/lignting-agents/tests/fixtures"
 )
 
@@ -236,6 +237,84 @@ func TestAC03DeliveryLoop(t *testing.T) {
 
 	t.Log("AC-03 R4/R6 passed: state machine, discussion message, PRD+code v1, challenge, request_changes, rework v2, v1 immutable")
 	t.Run("g3_and_write_timeline", func(t *testing.T) {
-		SkipSkeleton(t, "AC-03 G3 + file timeline", "R4/R5", "G3 由 AC-12 覆盖；写时间线等 AC-15 的 task-34 写 API")
+		ctx := context.Background()
+
+		// A real write through the shared write tool, linked to this task.
+		svc, err := write.New(write.Options{Root: h.Cfg.WorkspaceDir, TimelineLimit: 30, Repository: h.Store, Audit: h.Store})
+		if err != nil {
+			t.Fatalf("write service: %v", err)
+		}
+		res, err := svc.Apply(ctx, write.Request{
+			ActorID: fixtures.AgentDevAID, TaskID: taskID, Path: "ac03/login.go",
+			Content: "package login\n\nfunc Login() error { return nil }\n", Branch: "main", Reason: "实现登录接口",
+		})
+		if err != nil {
+			t.Fatalf("write login.go: %v", err)
+		}
+		var timeline struct {
+			Items []struct {
+				Path    string `json:"path"`
+				TaskID  string `json:"task_id"`
+				AgentID string `json:"agent_id"`
+				Diff    string `json:"diff"`
+				Reason  string `json:"reason"`
+				Branch  string `json:"branch"`
+				Status  string `json:"status"`
+			} `json:"items"`
+		}
+		h.GetData(t, "/api/writes/timeline?path=ac03/login.go", &timeline)
+		if len(timeline.Items) != 1 {
+			t.Fatalf("task write timeline = %+v, want 1", timeline.Items)
+		}
+		item := timeline.Items[0]
+		if item.TaskID != taskID || item.AgentID != fixtures.AgentDevAID || item.Status != "applied" || item.Diff == "" || item.Reason == "" || item.Branch != "main" {
+			t.Fatalf("task write timeline item = %+v (event %s)", item, res.Event.ID)
+		}
+
+		// Checklist complete -> G3 -> human approve -> reviewer approve -> done.
+		for i, criterion := range created.Criteria {
+			if err := h.postEvidence(taskID, criterion.ID, fixtures.AgentDevAID, `["command:go test ./..."]`); err != nil {
+				t.Fatalf("evidence criterion %d: %v", i, err)
+			}
+			h.postVerdict(t, taskID, criterion.ID, fixtures.AgentDevLeadID, "approved")
+		}
+		var g3 struct {
+			Approval struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"approval"`
+		}
+		h.PostData(t, "/api/tasks/"+taskID+"/g3", map[string]any{
+			"actor_agent_id": fixtures.AgentDevLeadID, "risk": "normal", "residual_risks": "无",
+		}, &g3)
+		if g3.Approval.ID == "" || g3.Approval.Status != "pending" {
+			t.Fatalf("G3 = %+v", g3)
+		}
+		var decided struct {
+			Status string `json:"status"`
+		}
+		h.PostData(t, "/api/approvals/"+g3.Approval.ID+"/decide", map[string]any{
+			"decision": "approved", "reason": "AC-03 核对表通过",
+		}, &decided)
+		if decided.Status != "approved" {
+			t.Fatalf("G3 decide = %+v", decided)
+		}
+		var ignored map[string]any
+		h.PostData(t, "/api/tasks/"+taskID+"/transition", map[string]any{
+			"to": "approved", "actor_agent_id": fixtures.AgentTestEmpID, "reason": "评审通过",
+		}, &ignored)
+		h.PostData(t, "/api/tasks/"+taskID+"/transition", map[string]any{
+			"to": "done", "actor_agent_id": fixtures.AgentDevLeadID, "reason": "G3 通过",
+		}, &ignored)
+		var done struct {
+			Task struct {
+				Status string `json:"status"`
+			} `json:"task"`
+		}
+		h.GetData(t, "/api/tasks/"+taskID, &done)
+		if done.Task.Status != "done" {
+			t.Fatalf("task after G3 = %q, want done", done.Task.Status)
+		}
+		t.Log("AC-03 G3/write passed: task-linked write timeline + G3 approve + done")
 	})
 }

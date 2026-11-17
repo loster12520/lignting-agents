@@ -4,10 +4,12 @@ package ac
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/store"
 )
 
@@ -17,7 +19,7 @@ import (
 // R2 scope (still skipped): assistant clarification, intent card, single-shot Q&A.
 func TestAC01FirstRunAndAssistant(t *testing.T) {
 	started := time.Now()
-	h := NewHarness(t)
+	h := NewHarness(t, WithCoreServices())
 
 	// 1) Fresh data dir: bootstrap asks for setup and exposes no session.
 	data := h.Bootstrap()
@@ -175,8 +177,90 @@ func TestAC01FirstRunAndAssistant(t *testing.T) {
 
 	t.Logf("T1 (install -> assistant DM) in-process elapsed: %s (manual browser timing required for release)", time.Since(started))
 
-	// R2: clarification, intent card and single-shot Q&A need core runtime.
+	// R2: intent card + one-shot Q&A do not create departments/tasks.
 	t.Run("intent_card_and_single_question_R2", func(t *testing.T) {
-		SkipSkeleton(t, "AC-01 intent card / single-shot Q&A", "R2", "需要 core Agent 运行时与 /api/intents")
+		ctx := context.Background()
+		var intent struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+			Content string `json:"content"`
+			Status  string `json:"status"`
+		}
+		h.PostData(t, "/api/intents", map[string]any{
+			"content": map[string]any{
+				"goal":      "AC-01 把 CLI 工具做成 Web 产品",
+				"scope":     []string{"登录", "导出"},
+				"non_goals": []string{"移动端"},
+			},
+		}, &intent)
+		if intent.ID == "" || intent.Version < 1 || !strings.Contains(intent.Content, "AC-01") {
+			t.Fatalf("intent = %+v", intent)
+		}
+		var latest struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+			Content string `json:"content"`
+			Status  string `json:"status"`
+		}
+		h.GetData(t, "/api/intents/latest", &latest)
+		if latest.ID != intent.ID || latest.Version != intent.Version || !strings.Contains(latest.Content, "登录") {
+			t.Fatalf("latest intent = %+v, want %s v%d", latest, intent.ID, intent.Version)
+		}
+
+		// A single question gets an assistant reply, but creates no task/department.
+		before, err := h.Store.CountMessages(ctx, dm.ID)
+		if err != nil {
+			t.Fatalf("count messages: %v", err)
+		}
+		var posted struct {
+			Message domain.Message `json:"message"`
+		}
+		h.PostData(t, "/api/conversations/"+dm.ID+"/messages", map[string]any{
+			"content": "这个功能大概需要几天？只回答，不要建部门或任务。",
+		}, &posted)
+		if err := h.Runtime.EnqueueUserMessage(ctx, posted.Message); err != nil {
+			t.Fatalf("enqueue single question: %v", err)
+		}
+		WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+			n, err := h.Store.CountMessages(ctx, dm.ID)
+			if err != nil {
+				return err
+			}
+			if n < before+2 {
+				return fmt.Errorf("assistant reply not persisted yet: messages=%d want>=%d", n, before+2)
+			}
+			return nil
+		})
+		var after struct {
+			Items []struct {
+				SenderType string `json:"sender_type"`
+				SenderID   string `json:"sender_id"`
+				Content    string `json:"content"`
+			} `json:"items"`
+			Total int64 `json:"total"`
+		}
+		h.GetData(t, "/api/conversations/"+dm.ID+"/messages?limit=100", &after)
+		if after.Total < before+2 || len(after.Items) < 2 {
+			t.Fatalf("DM messages after Q&A = %d/%d", after.Total, len(after.Items))
+		}
+		last := after.Items[len(after.Items)-1]
+		if last.SenderType != "agent" || last.SenderID != org.Assistant["id"] || !strings.Contains(last.Content, "（mock）") {
+			t.Fatalf("single-question reply = %+v, want mock assistant answer", last)
+		}
+		var tasks struct {
+			Total int64 `json:"total"`
+		}
+		h.GetData(t, "/api/tasks", &tasks)
+		if tasks.Total != 0 {
+			t.Fatalf("single question created tasks: total=%d", tasks.Total)
+		}
+		var orgAfter struct {
+			Departments []map[string]any `json:"departments"`
+		}
+		h.GetData(t, "/api/org", &orgAfter)
+		if len(orgAfter.Departments) != 0 {
+			t.Fatalf("single question created departments: %v", orgAfter.Departments)
+		}
+		t.Log("AC-01 R2 passed: intent card persisted; single question answered without creating task/department")
 	})
 }

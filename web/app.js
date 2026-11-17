@@ -21,6 +21,8 @@ import * as artifactsView from "./views/artifacts.js";
 import * as reviewsView from "./views/reviews.js";
 import * as discussionsView from "./views/discussions.js";
 import * as timelineView from "./views/timeline.js";
+import * as inboxView from "./views/inbox.js";
+import * as agentsView from "./views/agents.js";
 import * as approvalsView from "./views/approvals.js";
 import * as memoryView from "./views/memory.js";
 import * as auditView from "./views/audit.js";
@@ -36,6 +38,8 @@ const ROUTES = {
   reviews: reviewsView,
   discussions: discussionsView,
   timeline: timelineView,
+  inbox: inboxView,
+  agents: agentsView,
   approvals: approvalsView,
   memory: memoryView,
   audit: auditView,
@@ -44,8 +48,10 @@ const ROUTES = {
 
 const NAV = [
   ["chat", "会话", "chat"],
+  ["inbox", "收件箱", "inbox"],
   ["search", "搜索", "search"],
   ["org", "组织", "org"],
+  ["agents", "Agent 管理", "org"],
   ["tasks", "任务", "task"],
   ["artifacts", "产出", "file"],
   ["reviews", "评审", "shield"],

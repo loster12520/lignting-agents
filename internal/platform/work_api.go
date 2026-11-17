@@ -480,11 +480,14 @@ func (s *Server) handleSupersedeDecision(w http.ResponseWriter, r *http.Request,
 }
 
 type approvalDecisionRequest struct {
-	Decision string `json:"decision"`
-	Reason   string `json:"reason"`
+	Decision      string `json:"decision"`
+	Reason        string `json:"reason"`
+	SecondConfirm bool   `json:"second_confirm"`
 }
 
-func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request, owner *store.Owner) {
+// handleDecideApproval：人类会话+CSRF 或 被授权 Agent Token；
+// irreversible 审批需要双钥匙（second_confirm=true，两次显式批准 + audit）。
+func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req approvalDecisionRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -505,23 +508,66 @@ func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request, ow
 		s.writeErr(w, err)
 		return
 	}
+	// 主体：人类 owner 或被授权的 Agent。
+	decidedBy := ""
+	actorType := domain.SenderUser
+	owner, err := s.currentOwner(r)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if owner != nil {
+		if err := s.verifyCSRF(r, owner); err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		decidedBy = owner.ID
+	} else {
+		agent, err := s.agentFromToken(ctx, r)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		if agent == nil {
+			s.writeErr(w, errUnauthorized("请先登录"))
+			return
+		}
+		if s.delegatedAgent(ctx, approval.ID, agent.ID) == nil {
+			s.writeErr(w, errForbidden("该 Agent 没有此审批的有效授权"))
+			return
+		}
+		decidedBy = agent.ID
+		actorType = domain.SenderAgent
+	}
+	// 双钥匙：不可逆审批需要两次显式 confirm（v0.0.1 单用户用 second_confirm 代替第二人类）。
+	if approval.Kind == domain.ApprovalIrreversible {
+		if !req.SecondConfirm {
+			s.audit(ctx, actorType, decidedBy, "approval.dual_key_required", "approval", approval.ID, "denied",
+				jsonDetail(map[string]any{"decision": decision}))
+			s.writeErr(w, domain.NewError("dual_key_required", "不可逆动作需要双钥匙：请再次确认（second_confirm=true）", http.StatusConflict))
+			return
+		}
+		s.audit(ctx, actorType, decidedBy, "approval.dual_key_confirm", "approval", approval.ID, "ok",
+			jsonDetail(map[string]any{"decision": decision}))
+	}
 	var out domain.Approval
 	if approval.Kind == domain.ApprovalG3 {
 		svc, ok := s.requireWork(w)
 		if !ok {
 			return
 		}
-		out, err = svc.DecideG3(ctx, approval.ID, decision, owner.ID, req.Reason)
+		out, err = svc.DecideG3(ctx, approval.ID, decision, decidedBy, req.Reason)
 	} else {
-		out, err = s.store.DecideApproval(ctx, approval.ID, decision, owner.ID, req.Reason)
+		out, err = s.store.DecideApproval(ctx, approval.ID, decision, decidedBy, req.Reason)
 		if err == nil {
 			_, _ = s.store.AppendEvent(ctx, domain.Event{
 				Type: "approval.updated", ObjectType: "approval", ObjectID: out.ID,
-				ActorType: domain.SenderUser, ActorID: owner.ID,
+				ActorType: actorType, ActorID: decidedBy,
 				Payload: jsonDetail(map[string]any{"kind": out.Kind, "status": out.Status}),
 			})
-			s.audit(ctx, domain.SenderUser, owner.ID, "approval.decide", "approval", out.ID, "ok",
-				jsonDetail(map[string]any{"kind": out.Kind, "decision": decision, "reason": req.Reason}))
+			s.audit(ctx, actorType, decidedBy, "approval.decide", "approval", out.ID, "ok",
+				jsonDetail(map[string]any{"kind": out.Kind, "decision": decision, "reason": req.Reason,
+					"delegated": actorType == domain.SenderAgent}))
 		}
 	}
 	if err != nil {

@@ -180,6 +180,12 @@ type MemorySnapshotter interface {
 	InjectWithSnapshot(ctx context.Context, q MemoryQuery) (*MemorySnapshot, error)
 }
 
+// BridgeLookup 是临时桥查询（*store.Store.GetActiveBridge 直接满足）。
+// 无桥返回 (nil,nil)。
+type BridgeLookup interface {
+	GetActiveBridge(ctx context.Context, fromType, fromID, toType, toID string) (*domain.Bridge, error)
+}
+
 // MemoryInjector 返回本次 turn 可注入的记忆（已按权限/预算裁剪）。
 // 为 nil 时上下文装配只放「记忆占位」段落；实现 MemorySnapshotter 时优先用快照接口。
 type MemoryInjector interface {

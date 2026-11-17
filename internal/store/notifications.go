@@ -29,7 +29,7 @@ const notificationColumns = "id, level, title, body, conversation_id, object_typ
 var notificationLevels = map[string]bool{
 	"fyi": true, "need_know": true, "need_decide": true, "blocking": true,
 }
-var notificationStatuses = map[string]bool{"unread": true, "read": true, "dismissed": true}
+var notificationStatuses = map[string]bool{"unread": true, "read": true, "dismissed": true, "snoozed": true}
 
 // CreateNotification 写入收件箱条目；同一 (level, object_type, object_id) 应用层唯一。
 // 返回 (条目, 是否新建)。object_id 为空表示不参与去重（纯广播条目）。

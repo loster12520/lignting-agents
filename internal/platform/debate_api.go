@@ -18,6 +18,7 @@ type DebateService interface {
 	Escalate(ctx context.Context, actor domain.Agent, conversationID, debateID, taskID, level, issue, evidence, options, recommendation, consequence string) (domain.Decision, error)
 	CloseDebate(ctx context.Context, actor domain.Agent, debateID, title, decisionText, rationale, dissent, affectedTasks, affectedArtifacts, supersedes, revisitTrigger string) (domain.Decision, error)
 	Reopen(ctx context.Context, actor domain.Agent, decisionID, newEvidence string) (domain.Decision, error)
+	DebateStatus(ctx context.Context, conversationID, debateID string) (core.DebateStatusView, error)
 	GetDecision(ctx context.Context, id string) (domain.Decision, error)
 	ListDecisions(ctx context.Context, status string) ([]domain.Decision, error)
 	ListDecisionsByTask(ctx context.Context, taskID string) ([]domain.Decision, error)

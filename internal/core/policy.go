@@ -12,8 +12,9 @@ import (
 // Policy 负责动作授权与沟通路由隔离（requirements 6.6 / 9.1-8）。
 // 它是纯规则层：读上下文，不写库。
 type Policy struct {
-	lookup PolicyLookup
-	now    func() time.Time
+	lookup  PolicyLookup
+	bridges BridgeLookup
+	now     func() time.Time
 }
 
 // PolicyLookup 是 Policy 需要的只读查询（store 实现）。
@@ -25,6 +26,88 @@ type PolicyLookup interface {
 // NewPolicy 构造策略；lookup 可为 nil（仅做静态角色校验，用于测试）。
 func NewPolicy(lookup PolicyLookup) *Policy {
 	return &Policy{lookup: lookup, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// AttachBridges 注入临时桥查询；nil 表示默认拒绝直连。
+func (p *Policy) AttachBridges(bridges BridgeLookup) { p.bridges = bridges }
+
+func (p *Policy) activeBridge(ctx context.Context, fromType, fromID, toType, toID string) *domain.Bridge {
+	if p.bridges == nil || fromID == "" || toID == "" {
+		return nil
+	}
+	bridge, err := p.bridges.GetActiveBridge(ctx, fromType, fromID, toType, toID)
+	if err != nil {
+		return nil
+	}
+	return bridge
+}
+
+// bridgeScopeAllows 校验 bridge 是否允许该方向的直连（不能绕过工具/审批）。
+func (p *Policy) bridgeScopeAllows(bridge *domain.Bridge, fromType, toType string) bool {
+	if bridge == nil || !bridgeActive(bridge, p.now()) {
+		return false
+	}
+	switch bridge.Scope {
+	case domain.BridgeAgentPair:
+		return true
+	case domain.BridgeCrossDept:
+		return fromType == "agent" && toType == "agent"
+	case domain.BridgeLeadToUser:
+		return (fromType == "agent" && toType == "user") || (fromType == "user" && toType == "agent")
+	default:
+		return false
+	}
+}
+
+// bridgeParty 标识桥的一侧（agent/user/department + ID）。
+type bridgeParty struct{ typ, id string }
+
+// lookupBridge 依次按候选方向查有效桥；全部未命中返回 nil（默认拒绝）。
+func (p *Policy) lookupBridge(ctx context.Context, pairs ...[2]bridgeParty) *domain.Bridge {
+	for _, pair := range pairs {
+		bridge := p.activeBridge(ctx, pair[0].typ, pair[0].id, pair[1].typ, pair[1].id)
+		if bridge != nil && bridgeActive(bridge, p.now()) {
+			return bridge
+		}
+	}
+	return nil
+}
+
+// Route 是 Agent→Agent 路由检查：默认隔离规则 + active bridge。
+// 桥可能按 agent 对或 department 对、任一方向登记（平台 API 不强制方向），因此两种表示都查。
+func (p *Policy) Route(ctx context.Context, from, to domain.Agent, conv domain.Conversation) error {
+	if p.routeBridgeAllowed(ctx, from, to) {
+		return nil
+	}
+	return p.AuthorizeRoute(from, to, conv, nil)
+}
+
+func (p *Policy) routeBridgeAllowed(ctx context.Context, from, to domain.Agent) bool {
+	a, b := bridgeParty{"agent", from.ID}, bridgeParty{"agent", to.ID}
+	pairs := [][2]bridgeParty{{a, b}, {b, a}}
+	deptPair := false
+	if from.DepartmentID != "" && to.DepartmentID != "" && from.DepartmentID != to.DepartmentID {
+		da, db := bridgeParty{"department", from.DepartmentID}, bridgeParty{"department", to.DepartmentID}
+		pairs = append(pairs, [2]bridgeParty{da, db}, [2]bridgeParty{db, da})
+		deptPair = true
+	}
+	for i, pair := range pairs {
+		bridge := p.lookupBridge(ctx, pair)
+		if bridge == nil {
+			continue
+		}
+		if deptPair && i >= 2 {
+			// 部门级登记：仅跨部门直连/任意 Agent 对可放行该部门内的 Agent。
+			if bridge.Scope == domain.BridgeCrossDept || bridge.Scope == domain.BridgeAgentPair {
+				return true
+			}
+			continue
+		}
+		if p.bridgeScopeAllows(bridge, "agent", "agent") {
+			return true
+		}
+	}
+	return false
 }
 
 // ActionContext 是动作授权的上下文。
@@ -151,9 +234,17 @@ func (p *Policy) AuthorizeParticipation(ctx context.Context, agent domain.Agent,
 	switch conv.Type {
 	case domain.ConvDM:
 		if agent.Kind != domain.AgentKindAssistant {
+			ownerID := firstUserPrincipal(members)
+			bridge := p.lookupBridge(ctx,
+				[2]bridgeParty{{"agent", agent.ID}, {"user", ownerID}},
+				[2]bridgeParty{{"user", ownerID}, {"agent", agent.ID}},
+			)
+			if p.bridgeScopeAllows(bridge, "agent", "user") {
+				return nil
+			}
 			return NewForbidden(
-				fmt.Sprintf("%s 不能直接参与用户私聊", agent.Name),
-				"部门主管/员工与用户的沟通需经助理转接；如确需直连，请由用户开通临时桥。",
+				fmt.Sprintf("%s 不能直接参与用户私聊：请经助理转接，或由用户开通 lead_to_user 临时桥（带到期）", agent.Name),
+				"部门主管/员工与用户的沟通需经助理转接；如确需直连，请由用户开通 lead_to_user 临时桥（带到期）。",
 			)
 		}
 		return nil
@@ -183,7 +274,7 @@ func (p *Policy) AuthorizeRoute(from, to domain.Agent, conv domain.Conversation,
 	if from.ID == to.ID {
 		return NewForbidden("不能给自己发消息", "请直接在当前会话中回复。")
 	}
-	if bridgeActive(bridge, p.now()) {
+	if p.bridgeScopeAllows(bridge, "agent", "agent") {
 		return nil
 	}
 	if to.Kind == domain.AgentKindAssistant {
@@ -194,7 +285,7 @@ func (p *Policy) AuthorizeRoute(from, to domain.Agent, conv domain.Conversation,
 	}
 	if from.Kind == domain.AgentKindEmployee && to.DepartmentID != from.DepartmentID {
 		return NewForbidden(
-			fmt.Sprintf("员工 %s 不能直接联系其他部门的 %s", from.Name, to.Name),
+			fmt.Sprintf("员工 %s 不能直接联系其他部门的 %s：请找本部门主管对接，或由用户开通临时桥", from.Name, to.Name),
 			"请将问题交给本部门主管，由主管对主管对接；用户可开通临时桥。",
 		)
 	}
@@ -219,6 +310,15 @@ func alternativePath(agent domain.Agent, action string) string {
 	default:
 		return "请由具备权限的角色执行，或请求人类确认。"
 	}
+}
+
+func firstUserPrincipal(members []domain.ConversationMember) string {
+	for _, m := range members {
+		if m.PrincipalType == "user" && m.PrincipalID != "" {
+			return m.PrincipalID
+		}
+	}
+	return ""
 }
 
 func isMember(members []domain.ConversationMember, principalType, id string) bool {

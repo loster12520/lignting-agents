@@ -5,7 +5,10 @@ package ac
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/store"
@@ -328,6 +331,152 @@ func TestAC05MemoryRecallAndCorrect(t *testing.T) {
 
 	t.Log("AC-05 R7 passed: recall sources, candidate/approve/edit/delete tombstone, human-only + cross-dept isolation, manual rollback, snapshot")
 	t.Run("assistant_answer_from_memory_injection", func(t *testing.T) {
-		SkipSkeleton(t, "AC-05/AC-11 assistant answer from injected memory", "R7 core runtime", "需要 Agent turn 的 context.request 真注入（当前 platform 层无运行时）")
+		ctx := context.Background()
+		var memory struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+		}
+		h.PostData(t, "/api/memories", map[string]any{
+			"direct": true, "scope": "assistant", "agent_id": fixtures.AssistantID,
+			"entity_type": "preference", "entity_key": "ac05_style",
+			"content": "回答先给结论，再列来源。", "summary": "先结论后来源",
+			"tags": []string{"偏好", "ac05"}, "confidence": "high", "visibility": "agent-private",
+		}, &memory)
+		if memory.ID == "" || memory.Version != 1 {
+			t.Fatalf("AC-05 injected memory = %+v", memory)
+		}
+
+		// New conversation: memory injection must not depend on the old thread.
+		var conv struct {
+			ID string `json:"id"`
+		}
+		h.PostData(t, "/api/conversations", map[string]any{
+			"type": "project", "title": "AC-05 新会话", "visibility": "project",
+			"member_ids": []string{fixtures.AssistantID},
+		}, &conv)
+		if conv.ID == "" {
+			t.Fatal("new conversation missing id")
+		}
+
+		lastSeq := func() int64 {
+			events, err := h.Store.ListEventsSince(ctx, 0, "", 3000)
+			if err != nil {
+				t.Fatalf("events: %v", err)
+			}
+			var max int64
+			for _, ev := range events {
+				if ev.Seq > max {
+					max = ev.Seq
+				}
+			}
+			return max
+		}
+		waitTurn := func(since int64) string {
+			t.Helper()
+			var turnID string
+			WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+				events, err := h.Store.ListEventsSince(ctx, since, conv.ID, 1000)
+				if err != nil {
+					return err
+				}
+				for _, ev := range events {
+					if ev.Type != "turn.completed" {
+						continue
+					}
+					var payload struct {
+						TurnID string `json:"turn_id"`
+					}
+					if json.Unmarshal([]byte(ev.Payload), &payload) == nil {
+						turnID = payload.TurnID
+						return nil
+					}
+				}
+				return fmt.Errorf("turn.completed not seen")
+			})
+			return turnID
+		}
+		runTurn := func(content string) (string, []struct {
+			ID      string `json:"id"`
+			Summary string `json:"summary"`
+			Source  string `json:"source"`
+			Tokens  int64  `json:"tokens"`
+		}) {
+			t.Helper()
+			var posted struct {
+				Message domain.Message `json:"message"`
+			}
+			h.PostData(t, "/api/conversations/"+conv.ID+"/messages", map[string]any{"content": content}, &posted)
+			since := lastSeq()
+			if err := h.Runtime.EnqueueUserMessage(ctx, posted.Message); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			turnID := waitTurn(since)
+			var list struct {
+				Items []struct {
+					Payload string `json:"payload"`
+				} `json:"items"`
+			}
+			h.GetData(t, "/api/context-snapshots?turn_id="+turnID, &list)
+			if len(list.Items) != 1 {
+				t.Fatalf("snapshots = %d, want 1", len(list.Items))
+			}
+			var payload struct {
+				Entries []struct {
+					ID      string `json:"id"`
+					Summary string `json:"summary"`
+					Source  string `json:"source"`
+					Tokens  int64  `json:"tokens"`
+				} `json:"memory_entries"`
+			}
+			if err := json.Unmarshal([]byte(list.Items[0].Payload), &payload); err != nil {
+				t.Fatalf("snapshot payload: %v", err)
+			}
+			return turnID, payload.Entries
+		}
+		find := func(entries []struct {
+			ID      string `json:"id"`
+			Summary string `json:"summary"`
+			Source  string `json:"source"`
+			Tokens  int64  `json:"tokens"`
+		}, id string) (bool, string, int64, string) {
+			for _, e := range entries {
+				if e.ID == id {
+					return true, e.Source, e.Tokens, e.Summary
+				}
+			}
+			return false, "", 0, ""
+		}
+
+		_, entries := runTurn("AC-05 新会话第一轮：回忆导出偏好")
+		ok, source, tokens, summary := find(entries, memory.ID)
+		if !ok || source == "" || tokens <= 0 || !strings.Contains(summary, "先结论") {
+			t.Fatalf("injected memory missing source/tokens: %+v", entries)
+		}
+
+		resp, err := h.Client.Do(ctx, "PATCH", "/api/memories/"+memory.ID, map[string]any{
+			"summary": "先结论后来源（AC-05 修订）", "expected_version": memory.Version,
+		})
+		if err != nil {
+			t.Fatalf("patch memory: %v", err)
+		}
+		var patched struct {
+			Version int `json:"version"`
+		}
+		resp.MustStatus(t, 200).Data(t, &patched)
+		if patched.Version != 2 {
+			t.Fatalf("patched version = %d, want 2", patched.Version)
+		}
+		_, entries = runTurn("AC-05 第二轮：修订后偏好是否生效")
+		ok, _, _, summary = find(entries, memory.ID)
+		if !ok || !strings.Contains(summary, "AC-05 修订") {
+			t.Fatalf("patched memory not injected: %+v", entries)
+		}
+
+		h.ExpectStatus(t, "DELETE", "/api/memories/"+memory.ID, map[string]any{"reason": "AC-05 删除"}, 200)
+		_, entries = runTurn("AC-05 第三轮：删除后不再注入")
+		if ok, _, _, _ := find(entries, memory.ID); ok {
+			t.Fatalf("deleted memory still injected: %+v", entries)
+		}
+		t.Log("AC-05 injection passed: new conversation recalls memory with source/tokens; patch/delete take effect")
 	})
 }

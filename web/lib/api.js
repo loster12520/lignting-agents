@@ -91,6 +91,12 @@ export function createLiveApi() {
     logout: function () { return request("POST", "/api/logout", {}); },
     settings: function () { return request("GET", "/api/settings"); },
     saveSettings: function (payload) { return request("PUT", "/api/settings", payload); },
+    notifications: function (params) { return request("GET", "/api/notifications" + qs(params)); },
+    notificationStatus: function (id, payload) {
+      return request("POST", "/api/notifications/" + encodeURIComponent(id) + "/status", payload || {});
+    },
+    budgets: function () { return request("GET", "/api/settings/budgets"); },
+    saveBudgets: function (payload) { return request("PUT", "/api/settings/budgets", payload || {}); },
 
     conversations: function (params) { return request("GET", "/api/conversations" + qs(params)); },
     conversation: function (id) { return request("GET", "/api/conversations/" + encodeURIComponent(id)); },
@@ -125,8 +131,8 @@ export function createLiveApi() {
     departments: function () { return request("GET", "/api/departments"); },
     agents: function (params) { return request("GET", "/api/agents" + qs(params)); },
     agent: function (id) { return request("GET", "/api/agents/" + encodeURIComponent(id)); },
-    agentAction: function (id, action) {
-      return request("POST", "/api/agents/" + encodeURIComponent(id) + "/" + action, {});
+    agentAction: function (id, action, payload) {
+      return request("POST", "/api/agents/" + encodeURIComponent(id) + "/" + action, payload || {});
     },
 
     tasks: function (params) { return request("GET", "/api/tasks" + qs(params)); },
@@ -181,7 +187,10 @@ export function createLiveApi() {
 
     reindex: function () { return request("POST", "/api/admin/reindex", {}); },
     backup: function () { return request("POST", "/api/admin/backup", {}); },
-    emergencyStop: function () { return request("POST", "/api/admin/emergency-stop", {}); },
+    emergencyStop: function (enabled) {
+      const body = enabled === undefined ? {} : { enabled: !!enabled };
+      return request("POST", "/api/admin/emergency-stop", body);
+    },
 
   };
 }

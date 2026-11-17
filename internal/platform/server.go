@@ -65,6 +65,9 @@ type Server struct {
 
 	debateMu sync.RWMutex
 	debate   DebateService
+
+	mentionMu sync.RWMutex
+	mention   MentionQueueService
 }
 
 // New 构造 HTTP 服务并完成 store 侧的索引/事件钩子接线。
@@ -229,6 +232,12 @@ func (s *Server) routes() {
 	mount("/api/debates/{id}/escalate", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleEscalateDebate)})
 	mount("/api/debates/{id}/close", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCloseDebate)})
 	mount("/api/debates/{id}/reopen", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleReopenDebate)})
+	mount("/api/debates/{id}/status", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleDebateStatus)})
+	mount("/api/conversations/{id}/mention-queue", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleMentionQueueStatus),
+		http.MethodPost: s.authed(s.handleStopMentionQueue),
+	})
+	mount("/api/conversations/{id}/mention-queue/stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleStopMentionQueue)})
 
 	// R4/R5 写工具只读投影。
 	mount("/api/writes/timeline", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleWriteTimeline)})
@@ -251,6 +260,13 @@ func (s *Server) routes() {
 	mount("/api/admin/emergency-stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleEmergencyStop)})
 	mount("/api/audit", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleAudit)})
 	mount("/api/audit/export", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleAuditExport)})
+
+	// R3/R4 临时桥。
+	mount("/api/bridges", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListBridges),
+		http.MethodPost: s.authed(s.handleCreateBridge),
+	})
+	mount("/api/bridges/{id}", map[string]http.HandlerFunc{http.MethodDelete: s.authed(s.handleCloseBridge)})
 	mount("/api/approvals", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListApprovals)})
 	mount("/api/tasks/{id}/transition", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleTransitionTask)})
 	mount("/api/tasks/{id}/criteria/{cid}/evidence", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCriterionEvidence)})
@@ -259,7 +275,11 @@ func (s *Server) routes() {
 	mount("/api/reviews/{id}/verdicts", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSubmitVerdict)})
 	mount("/api/reviews/{id}/rework", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRework)})
 	mount("/api/decisions/{id}/supersede", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSupersedeDecision)})
-	mount("/api/approvals/{id}/decide", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDecideApproval)})
+	mount("/api/approvals/{id}/decide", map[string]http.HandlerFunc{http.MethodPost: s.handleDecideApproval})
+	mount("/api/approvals/batch", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleBatchDecideApprovals)})
+	mount("/api/approvals/{id}/snooze", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSnoozeApproval)})
+	mount("/api/approvals/{id}/delegate", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDelegateApproval)})
+	mount("/api/notifications/{id}/snooze", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSnoozeNotification)})
 
 	// R7 记忆检查器 / 手册 / 上下文回放。
 	mount("/api/memories", map[string]http.HandlerFunc{
@@ -307,6 +327,11 @@ func (s *Server) routes() {
 	mount("/api/agents/{id}/pause", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("pause"))})
 	mount("/api/agents/{id}/resume", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("resume"))})
 	mount("/api/agents/{id}/stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("stop"))})
+
+	// R4 抽检/质量（handler 由 sampling_api.go 提供；这里按平台 mount 约定接线，避免与其 register 重复）。
+	mount("/api/reviews/{id}/sampling", map[string]http.HandlerFunc{http.MethodPost: s.handleReviewSampling})
+	mount("/api/quality/reviews", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleQualityReviews)})
+	mount("/api/reviews/sampling/suggestions", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleSamplingSuggestions)})
 
 	// /api 兜底：未知路径返回 JSON 404（不是 text/plain）。
 	m.HandleFunc("/api/", s.handleAPINotFound)
