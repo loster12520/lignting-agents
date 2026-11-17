@@ -198,8 +198,8 @@ func TestAC15ConcurrentWriteTimeline(t *testing.T) {
 		} `json:"items"`
 	}
 	h.GetData(t, "/api/writes/timeline?path="+fixtures.TimelinePath+"&commit="+h.Seed.GitCommitSHA+"&limit=100", &committed)
-	if len(committed.Items) != 2 {
-		t.Fatalf("commit-group timeline = %d, want 2", len(committed.Items))
+	if len(committed.Items) != 1 {
+		t.Fatalf("commit-group timeline = %d, want the seeded main.go entry", len(committed.Items))
 	}
 	for _, it := range committed.Items {
 		if it.CommitSHA != h.Seed.GitCommitSHA {

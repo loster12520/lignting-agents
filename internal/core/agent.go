@@ -11,9 +11,10 @@ import (
 	"github.com/lignting/lignting-agents/internal/domain"
 )
 
-// inbound 是一条进入 mailbox 的用户消息。
+// inbound 是一条进入 mailbox 的用户消息。done 非空时在 turn 结束后关闭（@ 队列串行等待用）。
 type inbound struct {
 	message domain.Message
+	done    chan struct{}
 }
 
 // runner 是单个 Agent 的串行 mailbox：一次只跑一个 turn，其余排队。
@@ -74,6 +75,9 @@ func (r *runner) submit(in inbound) error {
 }
 
 func (r *runner) runOne(in inbound) {
+	if in.done != nil {
+		defer close(in.done)
+	}
 	defer atomic.AddInt32(&r.pending, -1)
 	ctx, cancel := context.WithTimeout(context.Background(), r.rt.opts.TurnTimeout)
 	r.mu.Lock()
@@ -91,6 +95,23 @@ func (r *runner) runOne(in inbound) {
 		r.last = &copied
 	}
 	r.mu.Unlock()
+}
+
+// submitAndWait 提交一条消息并等待该 turn 结束（@ 队列串行执行用）。
+func (r *runner) submitAndWait(ctx context.Context, in inbound) error {
+	done := make(chan struct{})
+	in.done = done
+	if err := r.submit(in); err != nil {
+		return err
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.done:
+		return fmt.Errorf("agent %s 已停止", r.agent.Name)
+	}
 }
 
 func (r *runner) close() {

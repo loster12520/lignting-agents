@@ -299,6 +299,11 @@ func (s *Server) routes() {
 	mount("/api/departments/{id}/pause", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("pause"))})
 	mount("/api/departments/{id}/resume", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("resume"))})
 	mount("/api/departments/{id}/archive", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("archive"))})
+	mount("/api/agents/{id}/token", map[string]http.HandlerFunc{
+		http.MethodPost:   s.authed(s.handleIssueAgentToken),
+		http.MethodDelete: s.authed(s.handleRevokeAgentToken),
+	})
+	mount("/api/agents/{id}/token/rotate", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRotateAgentToken)})
 	mount("/api/agents/{id}/pause", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("pause"))})
 	mount("/api/agents/{id}/resume", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("resume"))})
 	mount("/api/agents/{id}/stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("stop"))})

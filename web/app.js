@@ -50,7 +50,7 @@ const NAV = [
   ["artifacts", "产出", "file"],
   ["reviews", "评审", "shield"],
   ["discussions", "讨论", "chat"],
-  ["timeline", "变更时间线", "branch"],
+  ["timeline", "变更时间线", "clock"],
   ["approvals", "审批", "approval"],
   ["memory", "记忆", "memory"],
   ["audit", "审计", "audit"],

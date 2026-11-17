@@ -41,6 +41,9 @@ type Options struct {
 	Budget   *BudgetGuard
 	Settings SettingReader
 
+	// AC-14：单轮 @ 触发 Agent 数上限（<=0 取默认 2）。
+	MentionBatchLimit int
+
 	// 成本估算（每 1K token，人民币）；默认 0 表示只记 token 不估算金额。
 	PromptPricePer1K     float64
 	CompletionPricePer1K float64
@@ -53,6 +56,9 @@ type Runtime struct {
 	mu      sync.Mutex
 	runners map[string]*runner
 	closed  bool
+
+	mentionMu     sync.Mutex
+	mentionQueues map[string]*mentionQueue
 }
 
 // NewRuntime 构造运行时并补齐默认值。
@@ -90,7 +96,10 @@ func NewRuntime(opts Options) (*Runtime, error) {
 	if opts.Budget != nil && opts.Settings != nil {
 		opts.Budget.AttachSettings(opts.Settings)
 	}
-	return &Runtime{opts: opts, runners: map[string]*runner{}}, nil
+	if opts.MentionBatchLimit <= 0 {
+		opts.MentionBatchLimit = DefaultMentionBatchLimit
+	}
+	return &Runtime{opts: opts, runners: map[string]*runner{}, mentionQueues: map[string]*mentionQueue{}}, nil
 }
 
 // Options 返回运行时的只读配置副本（测试/诊断用）。
@@ -138,6 +147,17 @@ func (rt *Runtime) EnqueueUserMessage(ctx context.Context, msg domain.Message) e
 	members, err := rt.opts.Store.ListConversationMembers(ctx, msg.ConversationID)
 	if err != nil {
 		return fmt.Errorf("core: 读取会话成员失败: %w", err)
+	}
+	if mentions := parseMentions(msg.Meta); len(mentions) > 0 {
+		agents, merr := rt.resolveMentionAgents(ctx, conv, members, mentions)
+		if merr != nil {
+			return merr
+		}
+		if len(agents) == 0 {
+			return nil
+		}
+		rt.enqueueMention(conv.ID, mentionJob{message: msg, agents: agents})
+		return nil
 	}
 	agents, err := rt.resolveTriggeredAgents(ctx, conv, members)
 	if err != nil {

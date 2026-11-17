@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lignting/lignting-agents/internal/domain"
@@ -29,11 +30,24 @@ type DebateService struct {
 	store   DebateStore
 	now     func() time.Time
 	timebox time.Duration
+
+	timeoutMu     sync.Mutex
+	timeoutMarked map[string]bool
 }
 
 // NewDebateService 构造服务。
 func NewDebateService(store DebateStore) *DebateService {
-	return &DebateService{store: store, now: func() time.Time { return time.Now().UTC() }, timebox: DefaultDebateTimebox}
+	return &DebateService{
+		store: store, now: func() time.Time { return time.Now().UTC() },
+		timebox: DefaultDebateTimebox, timeoutMarked: map[string]bool{},
+	}
+}
+
+// SetTimebox 调整时间盒（测试/部署配置用）。
+func (s *DebateService) SetTimebox(d time.Duration) {
+	if d > 0 {
+		s.timebox = d
+	}
 }
 
 func (s *DebateService) nowString() string { return s.now().Format(time.RFC3339Nano) }
