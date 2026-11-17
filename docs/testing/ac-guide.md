@@ -70,7 +70,29 @@ AC-XX <名称>
   缺陷: <task id 或 无>
 ~~~
 
-## 6. 当前状态
+## 6. 当前状态（2026-11-18）
 
-- 全部 15 AC 为骨架（SkipSkeleton），go test -tags=acceptance ./tests/ac 可编译并 skip。
-- 点亮顺序建议跟随实施轮次：AC-01/02 → AC-03/12 → AC-04 → AC-05/11 → AC-06/07/08 → AC-09/10/13 → AC-14/15。
+- AC-01..15 全部点亮并 PASS（mock 模式，`go test -tags=acceptance ./tests/ac`，约 12s，0 Skip）。
+- 真实模型模式（`AC_MODEL_MODE=deepseek` + `DEEPSEEK_API_KEY`）需在有 Key 的环境人工复跑 AC-01/03/07。
+
+## 7. 发布冒烟与断线演练（R9）
+
+真实二进制冒烟（Linux/macOS，无需 Key）：
+
+~~~bash
+go build -o bin/lignting ./cmd/lignting
+./scripts/smoke.sh          # health(schema_version) → setup → bootstrap → 建会话 → 发消息 → 列表 → 检索 → 审计 → SSE 头
+~~~
+
+断线补齐演练（自动化等价验证）：
+
+~~~bash
+go test ./tests/verify/e2e -run TestR9OfflineCatchUpDrill -v
+DRILL_EVENTS=7200 go test ./tests/verify/e2e -run TestR9OfflineCatchUpDrill -v   # 加倍压力
+~~~
+
+- 做法：先连 SSE 拿到 baseline 游标后断开，断线窗口内灌 `DRILL_EVENTS`（默认 3600）条消息事件
+  （≈1 小时 @1 条/秒的写入量），再带 `since=baseline` 重连，断言补齐的事件 id 连续、不重、不漏。
+- 补发逻辑只按 `events.seq` 游标切片、没有按时间的清理，所以正确性与墙上时间无关，取决于断线期间事件条数；
+  真实浏览器断网 1 小时的人工演练仍是发布前人工项（见 [release-checklist](../doc/0.0.1%20最初版/release-checklist.md)）。
+- 2026-11-18 结果：3600 条断线消息 + 起止标记，重连 16.9ms 补齐 3604 条事件，id 连续、0 重复、3600/3600 命中。

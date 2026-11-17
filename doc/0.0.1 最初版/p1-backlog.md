@@ -3,7 +3,10 @@
 > 来源：task-14 独立验证、task-22 schema 增补、R9 收尾自查。
 > 原则：P1 不阻塞 v0.0.1 发布，但必须有替代方案/规避说明，并在 v0.0.2 补齐。
 
-## 1. Schema v2 增补（task-22）
+## 1. Schema 增补（task-22）
+
+> 当前 schema 版本 **3**（v3 = `search_terms(doc_id)` 索引，修复写入 O(N²)，见 [release-status](release-status.md)）。
+> 下表仍为 v0.0.2 计划项。
 
 | # | 项 | 现状/规避 | v0.0.2 计划 |
 |---|---|---|---|

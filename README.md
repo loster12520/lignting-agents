@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-需要 Go 1.27+（或用发布二进制，无需 Go）。
+需要 Go 1.27+（或用发布二进制，无需 Go）。没有 Go 时：`mise use -g go@1.27.4`。
 
 ~~~powershell
 # 开发模式：直接从源码启动
@@ -13,6 +13,14 @@ go run ./cmd/lignting --data-dir ./.lignting-data
 # 或构建单二进制
 go build -o bin/lignting.exe ./cmd/lignting
 ./bin/lignting.exe --data-dir ./.lignting-data --addr 127.0.0.1:8787
+~~~
+
+Linux/macOS：
+
+~~~bash
+go build -o bin/lignting ./cmd/lignting
+./bin/lignting --data-dir ./.lignting-data --addr 127.0.0.1:8787
+./scripts/smoke.sh   # 发布冒烟：health → setup → 建会话 → 发消息 → 检索 → 审计 → SSE
 ~~~
 
 打开 http://127.0.0.1:8787 ，按向导完成 owner 初始化；在设置页填入 DeepSeek API Key（或使用 `--mock-model` 做演示）。
@@ -36,9 +44,12 @@ go build -o bin/lignting.exe ./cmd/lignting
 
 ## 验收
 
-~~~powershell
+~~~bash
 go test ./...
 go test -tags=acceptance ./tests/ac
 go test ./tests/verify/e2e
 go test -tags=perf ./tests/bench -run TestSearchPerf100k
+./scripts/smoke.sh
 ~~~
+
+10 万消息检索基准的实测数据见 [docs/ops/search-benchmark.md](docs/ops/search-benchmark.md)。

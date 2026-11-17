@@ -1,6 +1,6 @@
 # Lignting Agents v0.0.1 发布说明
 
-日期：2026-11-17 · 版本：`0.0.1` · 形态：单二进制（Windows/Linux/macOS，Go 1.27.4 构建）
+日期：2026-11-18 · 版本：`0.0.1` · 形态：单二进制（Windows/Linux/macOS，Go 1.27.4 构建）
 
 ## 1. 交付内容
 
@@ -18,7 +18,7 @@
 
 ## 3. 升级与数据
 
-- 首次启动自动建库/迁移；schema 版本见 `GET /api/health` 的 `schema_version`（当前 `2`）。
+- 首次启动自动建库/迁移；schema 版本见 `GET /api/health` 的 `schema_version`（当前 `3`）。
 - 备份：`POST /api/backup` 生成包；恢复只允许空/新数据目录（`confirm=true`），不会就地覆盖运行中的库。
 - 导出/导入：`/api/export`、`/api/import`（见 [docs/ops/export-import.md](../docs/ops/export-import.md)）。
 
@@ -31,4 +31,4 @@
 
 - 仅监听 loopback；不要把 `--addr` 暴露到公网。
 - `secrets.json` 与 `--data-dir` 需由操作系统 ACL 保护（v0.0.1 未做 DPAPI/Keychain 封装）。
-- 审计 hash chain 可用 `GET /api/audit/verify` 校验；发现断裂按事故流程处理。
+- 审计 hash chain 由存储层 `VerifyAuditChain` 校验（备份恢复流程与测试自动执行）；发现断裂按事故流程处理。HTTP 侧提供 `GET /api/audit` 查询与 `/api/audit/export` 导出（不含校验端点）。
