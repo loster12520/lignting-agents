@@ -39,6 +39,58 @@ func normalizeTimeParam(raw string, endOfDay bool) (string, error) {
 	return "", errInvalid("时间格式必须是 RFC3339 或 YYYY-MM-DD")
 }
 
+// searchACL 计算检索视野：
+//   - owner 会话（无 Agent Token）：全部可见。
+//   - Agent Token（X-Lignting-Agent-Token）：按角色/部门/会话成员做 SQL 前置过滤；
+//     human_only 对任何 Agent 都不可见（只能经 memory.read 显式单条读取）。
+//
+// 返回 restrict=false 表示不限制（owner）。
+func (s *Server) searchACL(ctx context.Context, r *http.Request) (vis []string, convIDs []string, restrict bool, err error) {
+	token := strings.TrimSpace(r.Header.Get("X-Lignting-Agent-Token"))
+	if token == "" {
+		return nil, nil, false, nil
+	}
+	agent, err := s.store.FindAgentByTokenHash(ctx, store.HashToken(token))
+	if err != nil {
+		return nil, nil, true, errUnauthorized("Agent Token 无效")
+	}
+	vis = []string{domain.VisibilityDepartment, domain.VisibilityProject, domain.VisibilityOrg}
+	convs, err := s.store.ListConversations(ctx, store.ConversationFilter{})
+	if err != nil {
+		return nil, nil, true, err
+	}
+	memberOf := map[string]bool{}
+	for _, c := range convs {
+		members, err := s.store.ListConversationMembers(ctx, c.ID)
+		if err != nil {
+			return nil, nil, true, err
+		}
+		for _, m := range members {
+			if m.PrincipalType == domain.SenderAgent && m.PrincipalID == agent.ID {
+				memberOf[c.ID] = true
+			}
+		}
+		if c.Visibility == domain.VisibilityPrivate || c.Visibility == domain.VisibilityHumanOnly {
+			continue
+		}
+		switch agent.Kind {
+		case domain.AgentKindAssistant:
+			// 助理可见所有非私有群聊（项目/部门/跨部门），用于协调与汇总。
+			memberOf[c.ID] = true
+		case domain.AgentKindSupervisor, domain.AgentKindEmployee:
+			// 主管/员工默认只在本部门群聊与本人所在会话可见。
+			if c.DepartmentID != "" && c.DepartmentID == agent.DepartmentID {
+				memberOf[c.ID] = true
+			}
+		}
+	}
+	convIDs = make([]string, 0, len(memberOf))
+	for id := range memberOf {
+		convIDs = append(convIDs, id)
+	}
+	return vis, convIDs, true, nil
+}
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, owner *store.Owner) {
 	_ = owner
 	ctx := r.Context()
@@ -80,15 +132,26 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, owner *sto
 		s.writeErr(w, errInvalid("offset 不合法"))
 		return
 	}
+	vis, convIDs, restrict, err := s.searchACL(ctx, r)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	if restrict && len(convIDs) == 0 {
+		writeList(w, []any{}, 0, "")
+		return
+	}
 	f := search.Filter{
-		Kinds:          kinds,
-		ConversationID: q.Get("conversation_id"),
-		DepartmentID:   q.Get("department_id"),
-		SenderID:       q.Get("sender_id"),
-		From:           from,
-		To:             to,
-		Limit:          int(limit),
-		Offset:         int(offset),
+		Kinds:               kinds,
+		ConversationID:      q.Get("conversation_id"),
+		ConversationIDs:     convIDs,
+		DepartmentID:        q.Get("department_id"),
+		SenderID:            q.Get("sender_id"),
+		AllowedVisibilities: vis,
+		From:                from,
+		To:                  to,
+		Limit:               int(limit),
+		Offset:              int(offset),
 	}
 	rs, err := search.Search(ctx, s.store.DB, query, f)
 	if err != nil {

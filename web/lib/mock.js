@@ -570,6 +570,26 @@ export function createDemoApi() {
       if (p.scope) arr = arr.filter(function (m) { return m.scope === p.scope; });
       return { items: arr, total: arr.length, next: "" };
     },
+    createTask: async function () { throw unsupported("演示模式不支持创建任务：请用真实后端"); },
+    transitionTask: async function () { throw unsupported("演示模式不支持任务状态转换：请用真实后端"); },
+    criterionEvidence: async function () { throw unsupported("演示模式不支持填写验收证据：请用真实后端"); },
+    criterionVerdict: async function () { throw unsupported("演示模式不支持验收结论：请用真实后端"); },
+    submitG3: async function () { throw unsupported("演示模式不支持 G3：请用真实后端"); },
+
+    artifacts: async function () { return { items: [], total: 0, next: "" }; },
+    artifactVersions: async function () { return { items: [], total: 0, next: "" }; },
+    artifactVersion: async function () { throw unsupported("演示模式没有产出物版本"); },
+    createArtifact: async function () { throw unsupported("演示模式不支持创建产出物：请用真实后端"); },
+    addArtifactVersion: async function () { throw unsupported("演示模式不支持产出物版本：请用真实后端"); },
+
+    reviews: async function () { return { items: [], total: 0, next: "" }; },
+    createReview: async function () { throw unsupported("演示模式不支持提交挑战单：请用真实后端"); },
+    submitVerdict: async function () { throw unsupported("演示模式不支持裁决：请用真实后端"); },
+    rework: async function () { throw unsupported("演示模式不支持返工：请用真实后端"); },
+
+    decisions: async function () { return { items: [], total: 0, next: "" }; },
+    createDecision: async function () { throw unsupported("演示模式不支持决策记录：请用真实后端"); },
+
     audit: async function () { return { items: auditRows, total: auditRows.length, next: "" }; },
     usage: async function () { return { items: usageRows, total: usageRows.length, next: "" }; },
     writes: async function () { return { items: writes, total: writes.length, next: "" }; },

@@ -131,6 +131,29 @@ export function createLiveApi() {
 
     tasks: function (params) { return request("GET", "/api/tasks" + qs(params)); },
     task: function (id) { return request("GET", "/api/tasks/" + encodeURIComponent(id)); },
+    createTask: function (payload) { return request("POST", "/api/tasks", payload); },
+    transitionTask: function (id, payload) { return request("POST", "/api/tasks/" + encodeURIComponent(id) + "/transition", payload); },
+    criterionEvidence: function (taskID, cid, payload) {
+      return request("POST", "/api/tasks/" + encodeURIComponent(taskID) + "/criteria/" + encodeURIComponent(cid) + "/evidence", payload);
+    },
+    criterionVerdict: function (taskID, cid, payload) {
+      return request("POST", "/api/tasks/" + encodeURIComponent(taskID) + "/criteria/" + encodeURIComponent(cid) + "/verdict", payload);
+    },
+    submitG3: function (id, payload) { return request("POST", "/api/tasks/" + encodeURIComponent(id) + "/g3", payload || {}); },
+
+    artifacts: function (params) { return request("GET", "/api/artifacts" + qs(params)); },
+    artifactVersions: function (id) { return request("GET", "/api/artifacts/" + encodeURIComponent(id) + "/versions"); },
+    artifactVersion: function (id, v) { return request("GET", "/api/artifacts/" + encodeURIComponent(id) + "/versions/" + encodeURIComponent(v)); },
+    createArtifact: function (payload) { return request("POST", "/api/artifacts", payload); },
+    addArtifactVersion: function (id, payload) { return request("POST", "/api/artifacts/" + encodeURIComponent(id) + "/versions", payload); },
+
+    reviews: function (params) { return request("GET", "/api/reviews" + qs(params)); },
+    createReview: function (payload) { return request("POST", "/api/reviews", payload); },
+    submitVerdict: function (id, payload) { return request("POST", "/api/reviews/" + encodeURIComponent(id) + "/verdicts", payload); },
+    rework: function (id, payload) { return request("POST", "/api/reviews/" + encodeURIComponent(id) + "/rework", payload); },
+
+    decisions: function (params) { return request("GET", "/api/decisions" + qs(params)); },
+    createDecision: function (payload) { return request("POST", "/api/decisions", payload); },
     approvals: function (params) { return request("GET", "/api/approvals" + qs(params)); },
     decideApproval: function (id, payload) { return request("POST", "/api/approvals/" + encodeURIComponent(id) + "/decide", payload); },
     memories: function (params) { return request("GET", "/api/memories" + qs(params)); },

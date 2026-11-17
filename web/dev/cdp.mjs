@@ -123,14 +123,17 @@ try {
       awaitPromise: true, returnByValue: true
     });
     console.log("login status=" + (r.result && r.result.value));
-    await sleep(300);
+    // 登录发生在当前文档；必须整页重载，否则后续 hash 导航只是同文档跳转，boot 不会重跑
+    await cdp.send("Page.reload", { ignoreCache: true });
+    await sleep(1200);
   }
 
   for (const c of cases) {
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: c.width, height: c.height, deviceScaleFactor: 1, mobile: false
     });
-    await cdp.send("Page.navigate", { url: base + c.path });
+    const sep = c.path.indexOf("?") >= 0 ? "&" : "?";
+    await cdp.send("Page.navigate", { url: base + c.path + sep + "_cb=" + Date.now() });
     await sleep(1600);
     // 等异步渲染：轮询 document.querySelector('#app') 子树节点数
     for (let i = 0; i < 12; i++) {

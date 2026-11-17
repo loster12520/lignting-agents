@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lignting/lignting-agents/internal/domain"
 )
@@ -120,4 +121,36 @@ func (s *Store) InsertContextSnapshot(ctx context.Context, c domain.ContextSnaps
 		return fmt.Errorf("insert context snapshot: %w", err)
 	}
 	return nil
+}
+
+// ListContextSnapshots 按 turn/conversation 列出注入包（回放用，created_at 倒序）。
+func (s *Store) ListContextSnapshots(ctx context.Context, turnID, conversationID string, limit int) ([]domain.ContextSnapshot, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	where := []string{"1=1"}
+	args := make([]any, 0, 3)
+	if turnID != "" {
+		where = append(where, "turn_id=?")
+		args = append(args, turnID)
+	}
+	if conversationID != "" {
+		where = append(where, "conversation_id=?")
+		args = append(args, conversationID)
+	}
+	args = append(args, limit)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id, turn_id, agent_id, conversation_id, payload, created_at FROM context_snapshots WHERE "+strings.Join(where, " AND ")+" ORDER BY created_at DESC LIMIT ?", args...)
+	if err != nil {
+		return nil, fmt.Errorf("list context snapshots: %w", err)
+	}
+	defer rows.Close()
+	out := make([]domain.ContextSnapshot, 0, limit)
+	for rows.Next() {
+		var c domain.ContextSnapshot
+		if err := rows.Scan(&c.ID, &c.TurnID, &c.AgentID, &c.ConversationID, &c.Payload, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan snapshot: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

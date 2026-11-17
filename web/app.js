@@ -17,6 +17,8 @@ import * as chatView from "./views/chat.js";
 import * as searchView from "./views/search.js";
 import * as orgView from "./views/org.js";
 import * as tasksView from "./views/tasks.js";
+import * as artifactsView from "./views/artifacts.js";
+import * as reviewsView from "./views/reviews.js";
 import * as approvalsView from "./views/approvals.js";
 import * as memoryView from "./views/memory.js";
 import * as auditView from "./views/audit.js";
@@ -28,6 +30,8 @@ const ROUTES = {
   search: searchView,
   org: orgView,
   tasks: tasksView,
+  artifacts: artifactsView,
+  reviews: reviewsView,
   approvals: approvalsView,
   memory: memoryView,
   audit: auditView,
@@ -39,6 +43,8 @@ const NAV = [
   ["search", "搜索", "search"],
   ["org", "组织", "org"],
   ["tasks", "任务", "task"],
+  ["artifacts", "产出", "file"],
+  ["reviews", "评审", "shield"],
   ["approvals", "审批", "approval"],
   ["memory", "记忆", "memory"],
   ["audit", "审计", "audit"],

@@ -14,6 +14,7 @@ import (
 
 	"github.com/lignting/lignting-agents/internal/config"
 	"github.com/lignting/lignting-agents/internal/domain"
+	"github.com/lignting/lignting-agents/internal/memory"
 	"github.com/lignting/lignting-agents/internal/search"
 	"github.com/lignting/lignting-agents/internal/store"
 	"github.com/lignting/lignting-agents/web"
@@ -58,6 +59,9 @@ type Server struct {
 
 	workMu sync.RWMutex
 	work   WorkService
+
+	memMu sync.RWMutex
+	mem   *memory.Service
 }
 
 // New 构造 HTTP 服务并完成 store 侧的索引/事件钩子接线。
@@ -186,7 +190,10 @@ func (s *Server) routes() {
 	mount("/api/notifications/{id}/status", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleNotificationStatus)})
 	mount("/api/schedules", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListSchedules)})
 	mount("/api/schedules/{id}/cancel", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCancelSchedule)})
-	mount("/api/settings/password", map[string]http.HandlerFunc{http.MethodPut: s.authed(s.handleSetPassword)})
+	mount("/api/settings/password", map[string]http.HandlerFunc{
+		http.MethodPut:  s.authed(s.handleSetPassword),
+		http.MethodPost: s.authed(s.handleSetPassword),
+	})
 
 	// R4 只读投影（写路径等 core R4 service）。
 	mount("/api/tasks", map[string]http.HandlerFunc{
@@ -220,6 +227,25 @@ func (s *Server) routes() {
 	mount("/api/reviews/{id}/rework", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRework)})
 	mount("/api/decisions/{id}/supersede", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSupersedeDecision)})
 	mount("/api/approvals/{id}/decide", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDecideApproval)})
+
+	// R7 记忆检查器 / 手册 / 上下文回放。
+	mount("/api/memories", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListMemories),
+		http.MethodPost: s.authed(s.handleCreateMemory),
+	})
+	mount("/api/memories/{id}", map[string]http.HandlerFunc{
+		http.MethodPatch:  s.authed(s.handlePatchMemory),
+		http.MethodDelete: s.authed(s.handleDeleteMemory),
+	})
+	mount("/api/memories/{id}/approve", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleApproveMemory)})
+	mount("/api/memories/{id}/reject", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRejectMemory)})
+	mount("/api/manuals", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListManuals),
+		http.MethodPost: s.authed(s.handleProposeManual),
+	})
+	mount("/api/manuals/{id}/rollback", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRollbackManual)})
+	mount("/api/context-snapshots", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListContextSnapshots)})
+	mount("/api/turns/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetTurn)})
 
 	// R3 §7：意图 / 蓝图+G1 / provisioning / 部门与 Agent 生命周期。
 	mount("/api/intents", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSaveIntent)})

@@ -11,6 +11,7 @@ import (
 type Filter struct {
 	Kinds               []string
 	ConversationID      string
+	ConversationIDs     []string
 	DepartmentID        string
 	SenderID            string
 	From                string
@@ -53,6 +54,14 @@ func buildDocFilter(f Filter) (string, []any) {
 	if f.ConversationID != "" {
 		where = append(where, "d.conversation_id = ?")
 		args = append(args, f.ConversationID)
+	}
+	if len(f.ConversationIDs) > 0 {
+		ph := make([]string, len(f.ConversationIDs))
+		for i, id := range f.ConversationIDs {
+			ph[i] = "?"
+			args = append(args, id)
+		}
+		where = append(where, "d.conversation_id IN ("+strings.Join(ph, ",")+")")
 	}
 	if f.DepartmentID != "" {
 		where = append(where, "d.department_id = ?")
