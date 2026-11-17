@@ -1,7 +1,7 @@
 # v0.0.1 HTTP API 契约（冻结草案）
 
 > 版本 v1，Lead 维护。平台实现与前端必须以本文件为准；变更需 Lead 批准并同步 core/web。
-> 所有路径以 /api 开头；除 /api/health 与 /api/setup 外都需要会话。
+> 所有路径以 /api 开头；除 /api/health 与 /api/setup 外都需要会话。/api/health 是唯一不使用统一 data 包的成功响应（见 §12.1）。
 
 ## 1. 通用
 
@@ -194,3 +194,73 @@ GET /api/search?q=限流&kind=message,task,decision,artifact&department_id=&conv
 4. R5 实现 §9 写工具部分。
 5. R7 实现 §9 记忆部分。
 6. R8 实现 §9 审计/成本/备份。
+
+## 12. 契约决策 v1.1（Lead，2026-11-17）
+
+> 回应 verifier task-23。以下为最终口径；实现按此调整，不再另开歧义。
+
+### 12.1 响应包例外
+
+- /api/health 是基础设施探针，保持扁平对象（ok/version/model_mode/schema_version/uptime_seconds/now），不包 data。
+- 其他所有 /api/* 成功响应使用 §1.1 包。
+- 未匹配的 /api/* 必须返回 JSON 错误包 404 {"ok":false,"error":{"code":"not_found","message":"接口不存在"}}；方法不允许返回 405 JSON，不能回退到 text/plain 或 SPA HTML。
+- /api/* 的 panic 必须被 recoverer 转成 JSON 500，不输出堆栈。
+
+### 12.2 config.json 与 settings 的单一来源
+
+- config.json：部署/引导配置（data_dir、addr、model_mode、model、workspace_dir、max_agents、write_timeline_limit、write_parallel_by_file）。由启动参数/文件管理，UI 不直接编辑。
+- settings 表：运行期用户配置（owner 展示名、budgets、locale、session.secret、read:<conv>、api key 引用）。/api/settings 读写这里。
+- 冲突时：部署字段以 config.json 为准；用户偏好/预算以 settings 为准，缺失时回退 config 默认值。
+- GET /api/settings 只返回 allowlist 字段（owner_name、daily_budget_cny、monthly_budget_cny、locale、model_mode、has_api_key），绝不返回 session.secret/read 游标/API Key。
+- PUT /api/settings 只改 allowlist 中的用户字段；api_key 用单独端点。
+
+### 12.3 新增/补齐端点（R1 先实现前 2 个，其余随轮次）
+
+| 方法 | 路径 | 轮次 | 说明 |
+|---|---|---|---|
+| PUT | /api/settings/api-key | R1 | {api_key} 设置/更新；空字符串清除；返回 {has_api_key}；只写 secrets.json，不回显 |
+| GET | /api/notifications | R3 | ?status=unread|inbox|later|fyi；持久收件箱 |
+| POST | /api/notifications/{id}/status | R3 | {status} 标记已读/稍后/FYI |
+| GET | /api/schedules | R8 | 定时/到期列表 |
+| POST | /api/schedules/{id}/cancel | R8 | 取消并留审计 |
+| POST | /api/admin/restore | R8 | 从备份恢复（二次确认） |
+| POST | /api/admin/import | R8 | 导入 JSON（schema 校验/冲突策略） |
+
+附件（FR-CHAT-02）v0.0.1 方案待 R4：attachments 表 + POST /api/conversations/{id}/attachments + GET /api/attachments/{id}（权限校验、Content-Disposition attachment、nosniff、SVG/HTML 不同源）。R1 不实现，但契约保留。
+
+### 12.4 可见性与记忆 scope 映射
+
+- 对象可见性（conversations/artifacts/memories.visibility）统一用：private | department | project | org | human_only。
+- 记忆的 agent-private 映射到 private；team 映射到 department；org 映射到 org；human-only 映射到 human_only。API 返回对象可见性，接受旧别名但写库归一化。
+- memories.scope = 归属层：assistant | department | employee（FR-MEM-01/02）。
+- memories.entity_type = 候选主题：person | employee | department | project | task | decision | dispute | ability（附录 E 的 employee|department|project|task|decision|dispute 落到这里，不占用 scope）。
+- human-only 默认不注入任何 Agent；助理仅可显式 memory.read 单条（脱敏 + memory_reads 留痕 + turn_id），员工/主管拒绝。
+
+### 12.5 事件类型注册表（SSE）
+
+固定类型（新增需 Lead 批准）：
+
+| type | payload 关键字段 |
+|---|---|
+| message.created | message DTO |
+| message.updated | {message_id, content, edited_at} |
+| message.deleted | {message_id, deleted_at} |
+| message.delta | {message_id, conversation_id, delta, index} |
+| message.completed | message DTO |
+| turn.completed | {turn_id, agent_id, status} |
+| conversation.created | conversation DTO |
+| agent.status | {agent_id, status, reason} |
+| task.updated | {task_id, status, actor_id} |
+| approval.updated | {approval_id, status} |
+| write.updated | {write_event_id, status, path} |
+| notification.created | {notification_id, level, title} |
+| system.notice | {text, level} |
+
+SSE 只按 seq 广播；断线用 since/Last-Event-ID 补齐；前端去重按 seq。
+
+### 12.6 其他
+
+- /api/events 必须校验会话 + Origin/Host，不做 CSRF。
+- 所有时间 RFC3339 UTC；金额单位 CNY；token 为整数。
+- 错误详情不得包含 SQL、堆栈、密钥、内部路径。
+

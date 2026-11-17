@@ -344,16 +344,16 @@ Agent 回复中允许出现：
 
 | 轮次 | 状态 | owner | 备注 |
 |---|---|---|---|
-| R0 | 进行中 | lead | 环境/骨架/契约 |
-| R1 | 待开始 | platform-dev | |
-| R2 | 待开始 | core-dev | |
+| R0 | 已完成 | lead | Go 1.27.4 + 骨架 + schema/domain/config + health smoke + 基线测试 |
+| R1 | 已完成 | platform-dev + web-dev | 平台底座/前端骨架；Lead 已手工验证 setup/消息幂等/中文 2 字/删除不可搜/SSE delta/重启恢复 |
+| R2 | 进行中 | core-dev | DeepSeek 客户端 + Agent loop；mock 模式助理回复已通 |
 | R3 | 待开始 | core-dev | |
 | R4 | 待开始 | core-dev | |
-| R5 | 待开始 | tools-dev | |
+| R5 | 进行中 | tools-dev | 共享写工具先行 |
 | R6 | 待开始 | core-dev | |
-| R7 | 待开始 | memory-dev | |
+| R7 | 进行中 | memory-dev | 记忆包骨架先行 |
 | R8 | 待开始 | platform-dev | |
-| R9 | 待开始 | qa-dev | |
+| R9 | 进行中 | qa-dev | AC 夹具/文档骨架先行 |
 
 ---
 
