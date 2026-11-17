@@ -110,6 +110,18 @@ export function createLiveApi() {
     search: function (params) { return request("GET", "/api/search" + qs(params)); },
 
     org: function () { return request("GET", "/api/org"); },
+
+    latestIntent: function () { return request("GET", "/api/intents/latest"); },
+    saveIntent: function (payload) { return request("POST", "/api/intents", payload); },
+    proposeBlueprint: function (payload) { return request("POST", "/api/blueprints", payload); },
+    blueprint: function (id) { return request("GET", "/api/blueprints/" + encodeURIComponent(id)); },
+    approveBlueprint: function (id, payload) { return request("POST", "/api/blueprints/" + encodeURIComponent(id) + "/approve", payload || {}); },
+    rejectBlueprint: function (id, payload) { return request("POST", "/api/blueprints/" + encodeURIComponent(id) + "/reject", payload || {}); },
+    provision: function (payload) { return request("POST", "/api/provisioning", payload); },
+    provisioning: function (id) { return request("GET", "/api/provisioning/" + encodeURIComponent(id)); },
+    departmentAction: function (id, action, payload) {
+      return request("POST", "/api/departments/" + encodeURIComponent(id) + "/" + action, payload || {});
+    },
     departments: function () { return request("GET", "/api/departments"); },
     agents: function (params) { return request("GET", "/api/agents" + qs(params)); },
     agent: function (id) { return request("GET", "/api/agents/" + encodeURIComponent(id)); },

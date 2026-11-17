@@ -119,12 +119,14 @@ export function mount(ctx) {
       ),
       el("div", { class: "field" },
         el("label", { text: "DeepSeek API Key" }),
-        el("div", { class: "row" },
-          el("input", { class: "input", attrs: { type: "password", placeholder: settings.api_key_set ? "已配置（不回显）" : "sk-…", disabled: true, style: "max-width:320px" } }),
-          el("button", {
-            class: "btn btn-sm", attrs: { type: "button", title: "R8 交付：Key 单独端点与加密存储" },
-            on: { click: function () { ctx.toast("Key 变更走单独端点并加密存储（R8 交付）", "warn"); } }
-          }, "更换")
+        el("form", { on: { submit: function (e) { e.preventDefault(); } } },
+          el("div", { class: "row" },
+            el("input", { class: "input", attrs: { type: "password", placeholder: settings.api_key_set ? "已配置（不回显）" : "sk-…", disabled: true, autocomplete: "off", style: "max-width:320px" } }),
+            el("button", {
+              class: "btn btn-sm", attrs: { type: "button", title: "R8 交付：Key 单独端点与加密存储" },
+              on: { click: function () { ctx.toast("Key 变更走单独端点并加密存储（R8 交付）", "warn"); } }
+            }, "更换")
+          )
         ),
         el("div", { class: "help", text: "Key 不会明文回显；不会出现在消息、检索或日志里。" })
       )

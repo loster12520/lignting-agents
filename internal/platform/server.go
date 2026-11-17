@@ -52,6 +52,12 @@ type Server struct {
 	runnerMu     sync.Mutex
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
+
+	orgMu sync.RWMutex
+	org   OrgService
+
+	workMu sync.RWMutex
+	work   WorkService
 }
 
 // New 构造 HTTP 服务并完成 store 侧的索引/事件钩子接线。
@@ -164,10 +170,16 @@ func (s *Server) routes() {
 	mount("/api/events", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleEvents)})
 
 	mount("/api/org", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleOrg)})
-	mount("/api/departments", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListDepartments)})
+	mount("/api/departments", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListDepartments),
+		http.MethodPost: s.authed(s.handleCreateDepartment),
+	})
 	mount("/api/departments/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetDepartment)})
 	mount("/api/agents", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListAgents)})
-	mount("/api/agents/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetAgent)})
+	mount("/api/agents/{id}", map[string]http.HandlerFunc{
+		http.MethodGet:   s.authed(s.handleGetAgent),
+		http.MethodPatch: s.authed(s.handlePatchAgent),
+	})
 
 	// R3/R8：通知收件箱、调度、本地密码。
 	mount("/api/notifications", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListNotifications)})
@@ -175,6 +187,55 @@ func (s *Server) routes() {
 	mount("/api/schedules", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListSchedules)})
 	mount("/api/schedules/{id}/cancel", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCancelSchedule)})
 	mount("/api/settings/password", map[string]http.HandlerFunc{http.MethodPut: s.authed(s.handleSetPassword)})
+
+	// R4 只读投影（写路径等 core R4 service）。
+	mount("/api/tasks", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListTasks),
+		http.MethodPost: s.authed(s.handleCreateTask),
+	})
+	mount("/api/tasks/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetTask)})
+	mount("/api/artifacts", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListArtifacts),
+		http.MethodPost: s.authed(s.handleCreateArtifact),
+	})
+	mount("/api/artifacts/{id}/versions", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListArtifactVersions),
+		http.MethodPost: s.authed(s.handleAddArtifactVersion),
+	})
+	mount("/api/artifacts/{id}/versions/{v}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetArtifactVersion)})
+	mount("/api/reviews", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListReviews),
+		http.MethodPost: s.authed(s.handleCreateReview),
+	})
+	mount("/api/decisions", map[string]http.HandlerFunc{
+		http.MethodGet:  s.authed(s.handleListDecisions),
+		http.MethodPost: s.authed(s.handleCreateDecision),
+	})
+	mount("/api/approvals", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListApprovals)})
+	mount("/api/tasks/{id}/transition", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleTransitionTask)})
+	mount("/api/tasks/{id}/criteria/{cid}/evidence", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCriterionEvidence)})
+	mount("/api/tasks/{id}/criteria/{cid}/verdict", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCriterionVerdict)})
+	mount("/api/tasks/{id}/g3", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSubmitG3)})
+	mount("/api/reviews/{id}/verdicts", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSubmitVerdict)})
+	mount("/api/reviews/{id}/rework", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRework)})
+	mount("/api/decisions/{id}/supersede", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSupersedeDecision)})
+	mount("/api/approvals/{id}/decide", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDecideApproval)})
+
+	// R3 §7：意图 / 蓝图+G1 / provisioning / 部门与 Agent 生命周期。
+	mount("/api/intents", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleSaveIntent)})
+	mount("/api/intents/latest", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleLatestIntent)})
+	mount("/api/blueprints", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleProposeBlueprint)})
+	mount("/api/blueprints/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleGetBlueprint)})
+	mount("/api/blueprints/{id}/approve", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleApproveBlueprint)})
+	mount("/api/blueprints/{id}/reject", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleRejectBlueprint)})
+	mount("/api/provisioning", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleProvision)})
+	mount("/api/provisioning/{id}", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleProvisionStatus)})
+	mount("/api/departments/{id}/pause", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("pause"))})
+	mount("/api/departments/{id}/resume", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("resume"))})
+	mount("/api/departments/{id}/archive", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleDepartmentLifecycle("archive"))})
+	mount("/api/agents/{id}/pause", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("pause"))})
+	mount("/api/agents/{id}/resume", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("resume"))})
+	mount("/api/agents/{id}/stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleAgentLifecycle("stop"))})
 
 	// /api 兜底：未知路径返回 JSON 404（不是 text/plain）。
 	m.HandleFunc("/api/", s.handleAPINotFound)

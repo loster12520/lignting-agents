@@ -7,6 +7,14 @@ import {
 import { renderMarkdown } from "../lib/mdrender.js";
 import { renderCard, avatar, statusBadge, CONV_TYPE, VISIBILITY, MSG_TYPE, msgStateText, AGENT_STATUS } from "../lib/ui.js";
 
+// 未指定会话时优先落到助理私聊，其次第一条（避免默认打开只读的决策日志）
+function defaultConvId() {
+  for (let i = 0; i < state.conversations.length; i++) {
+    if (state.conversations[i].type === "dm") return state.conversations[i].id;
+  }
+  return state.conversations[0] ? state.conversations[0].id : "";
+}
+
 function newClientId() {
   try {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -15,7 +23,7 @@ function newClientId() {
 }
 
 export function mount(ctx, route) {
-  const convId = route.params.id || state.activeConvId || (state.conversations[0] && state.conversations[0].id) || "";
+  const convId = route.params.id || state.activeConvId || defaultConvId();
   const conv = convById(convId);
   state.activeConvId = convId;
   emit("active:changed", { convId: convId });

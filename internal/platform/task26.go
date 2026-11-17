@@ -15,12 +15,12 @@ import (
 // R3/R8：通知收件箱、审批 TTL、调度与本地密码（task-26）。
 
 const (
-	scheduleInterval   = 30 * time.Second
-	loginFailWindow    = 10 * time.Minute
-	loginFailMax       = 5
-	defaultInterruptN  = 3
-	settingInterrupt   = "notify.interrupt_budget"
-	settingPauseDept   = "approval.timeout_pause_departments"
+	scheduleInterval  = 30 * time.Second
+	loginFailWindow   = 10 * time.Minute
+	loginFailMax      = 5
+	defaultInterruptN = 3
+	settingInterrupt  = "notify.interrupt_budget"
+	settingPauseDept  = "approval.timeout_pause_departments"
 )
 
 func todayStart() string { return time.Now().UTC().Format("2006-01-02") + "T00:00:00.000000000Z" }
@@ -167,8 +167,7 @@ func (s *Server) notify(ctx context.Context, level, title, body, objectType, obj
 		}
 		if cnt, err := s.store.CountNotificationsSince(ctx, []string{"need_decide", "blocking"}, todayStart()); err == nil && cnt >= int64(budget) {
 			level = "need_know"
-			body += "
-（今日实时打扰预算已用完，本条降级为稍后处理）"
+			body += "（今日实时打扰预算已用完，本条降级为稍后处理）"
 		}
 	}
 	n, created, err := s.store.CreateNotification(ctx, store.Notification{

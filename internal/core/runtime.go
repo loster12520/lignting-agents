@@ -171,6 +171,16 @@ func (rt *Runtime) resolveTriggeredAgents(ctx context.Context, conv domain.Conve
 	var triggered []domain.Agent
 	var rejected []string
 	for _, agent := range candidates {
+		if agent.Status == domain.AgentPaused || agent.Status == domain.AgentOffline {
+			rejected = append(rejected, agent.Name+" 已暂停/离线")
+			continue
+		}
+		if agent.DepartmentID != "" {
+			if dept, err := rt.opts.Store.GetDepartment(ctx, agent.DepartmentID); err == nil && (dept.Status == domain.DeptPaused || dept.Status == domain.DeptArchived) {
+				rejected = append(rejected, agent.Name+" 所在部门已暂停/归档")
+				continue
+			}
+		}
 		if err := rt.opts.Policy.AuthorizeParticipation(ctx, agent, conv, members); err != nil {
 			rejected = append(rejected, err.Error())
 			continue

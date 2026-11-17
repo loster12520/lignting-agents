@@ -21,11 +21,21 @@ var requiredManualSections = [][]string{
 	{"红线", "升级"},
 }
 
-// ManualKey 是 domain.ManualKey 的别名：String() 由 domain 提供；
-// 参数校验改为自由函数 validateManualKey（Go 不能给外部类型定义方法）。
-type ManualKey = domain.ManualKey
+// ManualKey 定位某本手册（scope + 部门/Agent）。本包保留带方法的 defined type
+// （String 用于事件 key、validate 用于入参校验）；Repo 边界用 domain.MemoryManualKey 转换，
+// 使 internal/store 实现 Repo 时不需要 import internal/memory。
+type ManualKey struct {
+	Scope        string
+	DepartmentID string
+	AgentID      string
+}
 
-func validateManualKey(k ManualKey) error {
+// String 返回稳定键，用于日志与事件。
+func (k ManualKey) String() string {
+	return k.Scope + "/" + k.DepartmentID + "/" + k.AgentID
+}
+
+func (k ManualKey) validate() error {
 	if !validScope(k.Scope) {
 		return invalidError("未知手册范围", map[string]any{"scope": k.Scope})
 	}
@@ -197,7 +207,7 @@ func (s *Service) ProposeManual(ctx context.Context, key ManualKey, content stri
 	if !CanReview(actor) {
 		return domain.PromptManual{}, forbiddenError("无权维护管理手册", nil)
 	}
-	if err := validateManualKey(key); err != nil {
+	if err := key.validate(); err != nil {
 		return domain.PromptManual{}, err
 	}
 	if err := ValidateManual(content, s.cfg.ManualMaxChars); err != nil {
@@ -230,7 +240,7 @@ func (s *Service) ProposeManual(ctx context.Context, key ManualKey, content stri
 		diff = LineDiff(current.Content, content)
 	}
 	added, removed := CountDiff(diff)
-	version, err := s.repo.MaxManualVersion(ctx, key)
+	version, err := s.repo.MaxManualVersion(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 	if err != nil {
 		return domain.PromptManual{}, err
 	}
@@ -317,7 +327,7 @@ func (s *Service) RollbackManual(ctx context.Context, key ManualKey, toVersion i
 	if !CanReview(actor) {
 		return domain.PromptManual{}, forbiddenError("无权限", nil)
 	}
-	versions, err := s.repo.ListManuals(ctx, key)
+	versions, err := s.repo.ListManuals(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 	if err != nil {
 		return domain.PromptManual{}, err
 	}
@@ -340,7 +350,7 @@ func (s *Service) RollbackManual(ctx context.Context, key ManualKey, toVersion i
 	if hasCurrent {
 		diff = LineDiff(current.Content, content)
 	}
-	ver, err := s.repo.MaxManualVersion(ctx, key)
+	ver, err := s.repo.MaxManualVersion(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 	if err != nil {
 		return domain.PromptManual{}, err
 	}
@@ -374,15 +384,15 @@ func (s *Service) RollbackManual(ctx context.Context, key ManualKey, toVersion i
 
 // ListManualVersions 列出手册全部版本（管理界面 diff/回滚用）。
 func (s *Service) ListManualVersions(ctx context.Context, key ManualKey) ([]domain.PromptManual, error) {
-	if err := validateManualKey(key); err != nil {
+	if err := key.validate(); err != nil {
 		return nil, err
 	}
-	return s.repo.ListManuals(ctx, key)
+	return s.repo.ListManuals(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 }
 
 // CurrentApprovedManual 只返回已批准版本，供注入使用（proposed 永不被注入）。
 func (s *Service) CurrentApprovedManual(ctx context.Context, key ManualKey) (domain.PromptManual, bool, error) {
-	versions, err := s.repo.ListManuals(ctx, key)
+	versions, err := s.repo.ListManuals(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 	if err != nil {
 		return domain.PromptManual{}, false, err
 	}
@@ -402,7 +412,7 @@ func (s *Service) CurrentApprovedManual(ctx context.Context, key ManualKey) (dom
 
 // CurrentManual 返回当前生效版本；没有 approved 时回退到最新 proposed（仅供 UI 预览，注入必须用 CurrentApprovedManual）。
 func (s *Service) CurrentManual(ctx context.Context, key ManualKey) (domain.PromptManual, bool, error) {
-	versions, err := s.repo.ListManuals(ctx, key)
+	versions, err := s.repo.ListManuals(ctx, domain.MemoryManualKey{Scope: key.Scope, DepartmentID: key.DepartmentID, AgentID: key.AgentID})
 	if err != nil {
 		return domain.PromptManual{}, false, err
 	}

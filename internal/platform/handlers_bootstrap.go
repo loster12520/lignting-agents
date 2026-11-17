@@ -336,6 +336,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, errConflict("尚未初始化，请先完成 setup"))
 		return
 	}
+	if n := s.recentLoginFailures(ctx, owner.ID); n >= loginFailMax {
+		s.audit(ctx, domain.SenderUser, owner.ID, "login", "owner", owner.ID, "denied", jsonDetail(map[string]any{"reason": "rate_limited"}))
+		s.writeErr(w, domain.NewError(domain.CodeRateLimited, "登录失败次数过多，请 10 分钟后再试", http.StatusTooManyRequests))
+		return
+	}
 	var req loginRequest
 	_ = decodeJSON(w, r, &req)
 	if owner.HasPassword() {

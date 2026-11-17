@@ -34,14 +34,13 @@ export function mountSetup(root, opts) {
     )
   );
 
-  const wrap = el("div", { class: "wizard" }, card);
+  const column = el("div", { style: { display: "grid", gap: "12px", width: "min(640px, 100%)" } });
   if (isDemo) {
-    wrap.insertBefore(
-      el("div", { class: "notice warn", attrs: { style: "width:min(640px,100%);margin-bottom:12px" } },
-        "演示模式：配置只存在浏览器内存，刷新即重置；不会写入你的真实数据目录。"),
-      card
-    );
+    column.appendChild(el("div", { class: "notice warn" },
+      "演示模式：配置只存在浏览器内存，刷新即重置；不会写入你的真实数据目录。"));
   }
+  column.appendChild(card);
+  const wrap = el("div", { class: "wizard" }, column);
   root.appendChild(wrap);
 
   function renderSteps() {
@@ -64,7 +63,10 @@ export function mountSetup(root, opts) {
     });
     input.value = opts2.value || "";
     const err = el("div", { class: "err" });
-    const wrap2 = el("div", { class: "field" },
+    const wrap2 = el("form", {
+      class: "field",
+      on: { submit: function (e) { e.preventDefault(); if (typeof opts2.onSubmit === "function") opts2.onSubmit(); } }
+    },
       el("label", { attrs: { for: opts2.id }, text: opts2.label }),
       input,
       opts2.help ? el("div", { class: "help", text: opts2.help }) : null,
@@ -89,6 +91,8 @@ export function mountSetup(root, opts) {
       name.input.addEventListener("keydown", function (e) {
         if (e.key === "Enter") { e.preventDefault(); goNext(); }
       });
+      // 表单提交（回车）同样推进
+      name.node.addEventListener("submit", function (e) { e.preventDefault(); goNext(); });
       bodyHost.appendChild(name.node);
       setTimeout(function () { name.input.focus(); }, 0);
       bodyHost._get = function () { return { name: name }; };

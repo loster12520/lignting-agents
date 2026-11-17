@@ -62,8 +62,8 @@ func Default(dataDir string) Config {
 	}
 }
 
-func (c Config) ConfigPath() string { return filepath.Join(c.DataDir, "config.json") }
-func (c Config) DBPath() string     { return filepath.Join(c.DataDir, "lignting.db") }
+func (c Config) ConfigPath() string  { return filepath.Join(c.DataDir, "config.json") }
+func (c Config) DBPath() string      { return filepath.Join(c.DataDir, "lignting.db") }
 func (c Config) SecretsPath() string { return filepath.Join(c.DataDir, "secrets.json") }
 
 func Load(dataDir string) (Config, error) {

@@ -79,6 +79,12 @@ export function parseMeta(meta) {
   } catch (e) { return {}; }
 }
 
+// kv() 在字段为空时返回 null；必须经由 appendKv 安全追加（浏览器不允许 appendChild(null)）
+function appendKv(body, label, value) {
+  const node = kv(label, value);
+  if (node) body.appendChild(node);
+}
+
 function kv(label, value) {
   if (value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)) return null;
   return el("div", { class: "mcard-kv" },
@@ -106,10 +112,10 @@ export function renderCard(msg, ctx) {
     head.appendChild(badge("任务", "sky"));
     head.appendChild(el("span", { class: "mcard-title", text: meta.title || msg.content || "任务" }));
     if (meta.status) head.appendChild(statusBadge(meta.status, TASK_STATUS));
-    body.appendChild(kv("负责", meta.owner));
-    body.appendChild(kv("部门", meta.department));
-    body.appendChild(kv("视角", meta.perspective));
-    body.appendChild(kv("验收", meta.criteria));
+    appendKv(body, "负责", meta.owner);
+    appendKv(body, "部门", meta.department);
+    appendKv(body, "视角", meta.perspective);
+    appendKv(body, "验收", meta.criteria);
     if (meta.task_id) {
       foot.appendChild(el("button", {
         class: "btn btn-sm", attrs: { type: "button" },
@@ -120,22 +126,22 @@ export function renderCard(msg, ctx) {
     head.appendChild(badge("评审挑战", "warn"));
     head.appendChild(el("span", { class: "mcard-title", text: meta.claim || msg.content || "挑战单" }));
     if (meta.severity) head.appendChild(badge(String(meta.severity).toUpperCase(), "bad"));
-    body.appendChild(kv("影响", meta.impact));
-    body.appendChild(kv("方向", meta.from_department && meta.to_department ? meta.from_department + " → " + meta.to_department : ""));
-    body.appendChild(kv("状态", meta.status));
+    appendKv(body, "影响", meta.impact);
+    appendKv(body, "方向", meta.from_department && meta.to_department ? meta.from_department + " → " + meta.to_department : "");
+    appendKv(body, "状态", meta.status);
   } else if (card === "decision") {
     head.appendChild(badge("决策", "violet"));
     head.appendChild(el("span", { class: "mcard-title", text: meta.title || msg.content || "决策" }));
     if (meta.status) head.appendChild(badge(labelOf({ accepted: "已采纳", proposed: "提议中", superseded: "已取代", rejected: "已否决" }, meta.status), meta.status === "accepted" ? "ok" : ""));
-    body.appendChild(kv("决策人", meta.deciders));
-    body.appendChild(kv("异议", meta.dissent));
+    appendKv(body, "决策人", meta.deciders);
+    appendKv(body, "异议", meta.dissent);
   } else if (card === "approval") {
     head.appendChild(badge("审批 · " + (APPROVAL_KIND[meta.kind] || meta.kind || "闸门"), "accent"));
     head.appendChild(el("span", { class: "mcard-title", text: meta.title || "等待审批" }));
     if (meta.status) head.appendChild(statusBadge(meta.status, APPROVAL_STATUS));
-    body.appendChild(kv("风险", meta.risk));
-    body.appendChild(kv("范围", meta.scope));
-    body.appendChild(kv("申请人", meta.requested_by));
+    appendKv(body, "风险", meta.risk);
+    appendKv(body, "范围", meta.scope);
+    appendKv(body, "申请人", meta.requested_by);
     if (meta.status === "pending" || !meta.status) {
       const approve = el("button", {
         class: "btn btn-sm btn-primary", attrs: { type: "button" },
@@ -151,8 +157,8 @@ export function renderCard(msg, ctx) {
   } else if (card === "artifact") {
     head.appendChild(badge("产出物", ""));
     head.appendChild(el("span", { class: "mcard-title", text: meta.title || msg.content || "产出物" }));
-    body.appendChild(kv("类型", meta.type));
-    body.appendChild(kv("版本", meta.version));
+    appendKv(body, "类型", meta.type);
+    appendKv(body, "版本", meta.version);
   } else {
     head.appendChild(badge(card, ""));
     head.appendChild(el("span", { class: "mcard-title", text: meta.title || msg.content || "" }));

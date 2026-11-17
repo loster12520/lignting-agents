@@ -86,4 +86,3 @@ func TestActionValidate(t *testing.T) {
 		t.Fatal("unknown action should fail")
 	}
 }
-

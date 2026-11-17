@@ -91,6 +91,12 @@ firstResult.dispatch("click");
 await wait(80);
 ok("点击结果跳转到消息上下文", (location.hash || "").indexOf("#/chat/") === 0 && (location.hash || "").indexOf("msg=") > 0, location.hash);
 
+// 决策日志：验证「card 缺字段时不能 appendChild(null)」回归
+await goto("#/chat/conv_log");
+ok("决策日志渲染卡片（无崩溃）", count(".mcard") >= 2 && textOf(document.querySelector(".msgs")).indexOf("加载失败") < 0,
+  "mcard=" + count(".mcard") + " text=" + textOf(document.querySelector(".msgs")).slice(0, 60));
+ok("决策日志为只读输入", document.querySelector(".composer-input").disabled === true);
+
 await goto("#/org");
 ok("组织图渲染节点", count(".org-node") >= 3, String(count(".org-node")));
 

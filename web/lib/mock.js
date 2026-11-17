@@ -535,7 +535,21 @@ export function createDemoApi() {
       for (let i = 0; i < agents.length; i++) if (agents[i].id === id) return agents[i];
       throw unsupported("Agent 不存在");
     },
-    agentAction: async function () { throw unsupported("演示模式不支持 Agent 操作（R3 交付）"); },
+    agentAction: async function () { throw unsupported("演示模式不支持 Agent 操作：请用真实后端（18794/本机实例）"); },
+
+    latestIntent: async function () {
+      const e = new Error("演示模式没有真实意图卡");
+      e.code = "not_found";
+      throw e;
+    },
+    saveIntent: async function () { throw unsupported("演示模式不支持保存意图卡：请用真实后端"); },
+    proposeBlueprint: async function () { throw unsupported("演示模式不支持生成蓝图：请用真实后端"); },
+    blueprint: async function () { throw unsupported("演示模式不支持查询蓝图：请用真实后端"); },
+    approveBlueprint: async function () { throw unsupported("演示模式不支持 G1 审批：请用真实后端"); },
+    rejectBlueprint: async function () { throw unsupported("演示模式不支持 G1 拒绝：请用真实后端"); },
+    provision: async function () { throw unsupported("演示模式不支持 provisioning：请用真实后端"); },
+    provisioning: async function () { throw unsupported("演示模式不支持 provisioning 状态：请用真实后端"); },
+    departmentAction: async function () { throw unsupported("演示模式不支持部门生命周期操作：请用真实后端"); },
 
     tasks: async function () { return { items: tasks, total: tasks.length, next: "" }; },
     task: async function (id) {

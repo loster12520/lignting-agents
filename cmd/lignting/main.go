@@ -14,10 +14,11 @@ import (
 
 	"github.com/lignting/lignting-agents/internal/config"
 	"github.com/lignting/lignting-agents/internal/core"
-	"github.com/lignting/lignting-agents/internal/deepseek"
 	"github.com/lignting/lignting-agents/internal/domain"
+	"github.com/lignting/lignting-agents/internal/memory"
 	"github.com/lignting/lignting-agents/internal/platform"
 	"github.com/lignting/lignting-agents/internal/store"
+	"github.com/lignting/lignting-agents/internal/tools"
 )
 
 func main() {
@@ -58,16 +59,40 @@ func main() {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 
-	secrets, err := config.LoadSecrets(cfg.DataDir)
+	writeSvc, gitW, err := setupWorkspace(ctx, cfg, st)
 	if err != nil {
-		log.Fatalf("读取本地密钥失败: %v", err)
+		log.Fatalf("初始化共享写工具失败: %v", err)
+	}
+	if gitW != nil {
+		defer gitW.Stop()
+	}
+	if report, err := writeSvc.Recover(ctx); err != nil {
+		log.Printf("写事件恢复失败: %v", err)
+	} else if report.Applied+report.Rejected+report.Unknown > 0 {
+		log.Printf("写事件恢复: applied=%d rejected=%d unknown=%d", report.Applied, report.Rejected, report.Unknown)
 	}
 
-	provider := buildProvider(cfg, secrets)
+	toolsReg, err := tools.NewRegistry(tools.Options{
+		Root:    cfg.WorkspaceDir,
+		Writer:  writeSvc,
+		History: writeSvc,
+		Search:  &deepseekSearchProvider{dataDir: cfg.DataDir},
+		Audit:   st,
+	})
+	if err != nil {
+		log.Fatalf("初始化工具注册表失败: %v", err)
+	}
+
+	memSvc, err := memory.NewService(memory.Options{Repo: memory.NewStoreRepo(st)})
+	if err != nil {
+		log.Fatalf("初始化记忆服务失败: %v", err)
+	}
+
 	rt, err := core.NewRuntime(core.Options{
 		Store:          st,
-		Provider:       provider,
-		Tools:          core.NewToolRegistry(nil), // R5 接入 internal/tools 执行器
+		Provider:       newDynamicProvider(cfg),
+		Memory:         coreMemoryInjector{svc: memSvc},
+		Tools:          core.NewToolRegistry(toolExecutor{reg: toolsReg}),
 		Model:          cfg.Model,
 		OwnerName:      ownerName(ctx, st, cfg),
 		ServerWebTools: true,
@@ -81,6 +106,9 @@ func main() {
 
 	srv := platform.New(cfg, st)
 	srv.SetMessageSink(coreSink{rt: rt})
+	orgSvc := core.NewOrgService(st, rt)
+	srv.SetOrgService(orgSvc)
+	wireActions(rt, orgSvc, st)
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
@@ -101,6 +129,9 @@ func main() {
 	<-sig
 	log.Println("正在停止…")
 	rt.Close()
+	if gitW != nil {
+		gitW.Stop()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
@@ -114,17 +145,6 @@ func (s coreSink) OnUserMessage(ctx context.Context, msg domain.Message) {
 	if err := s.rt.EnqueueUserMessage(ctx, msg); err != nil {
 		log.Printf("core 接收用户消息失败: %v", err)
 	}
-}
-
-func buildProvider(cfg config.Config, secrets config.Secrets) deepseek.Provider {
-	if cfg.ModelMode == config.ModelMock {
-		return deepseek.NewMock()
-	}
-	return deepseek.New(deepseek.Config{
-		APIKey:     secrets.DeepSeekAPIKey,
-		Model:      cfg.Model,
-		MaxRetries: 2,
-	})
 }
 
 func ownerName(ctx context.Context, st *store.Store, cfg config.Config) string {

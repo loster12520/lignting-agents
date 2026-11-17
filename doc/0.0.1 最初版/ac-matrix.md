@@ -33,13 +33,13 @@ go test -tags=acceptance ./tests/ac -v -run TestAC01
 
 | AC | 主题 | 主要 FR（requirements §14 关联） | 测试文件 / 测试函数 | 证据命令 | 主轮次 | 当前状态 | 验证方式 |
 |---|---|---|---|---|---|---|---|
-| AC-01 | 首次启动与助理 | FR-ONB-01..05、FR-ASST-01/02、FR-CHAT-01、FR-SEC-01 | tests/ac/ac01_first_run_test.go / TestAC01FirstRunAndAssistant | ac.ps1 -Run TestAC01 -Strict | R1/R2 | 骨架 | 自动 + T1 人工计时 |
+| AC-01 | 首次启动与助理 | FR-ONB-01..05、FR-ASST-01/02、FR-CHAT-01、FR-SEC-01 | tests/ac/ac01_first_run_test.go / TestAC01FirstRunAndAssistant | ac.ps1 -Run TestAC01 | R1/R2 | **R1 通过（部分）**：bootstrap/setup/助理 DM/greeting/审计/重启幂等；意图卡/单问 R2 skip | 自动 + T1 人工计时 |
 | AC-02 | 部门组建 | FR-ASST-03/04、FR-TEAM-01..06、FR-SEC-06 | tests/ac/ac02_provisioning_test.go / TestAC02DepartmentProvisioning | ac.ps1 -Run TestAC02 -Strict | R3 | 骨架 | 自动 + T2 人工计时 |
 | AC-03 | 需求交付闭环 | FR-TASK-01..08、FR-ART-01..05、FR-REV-01..03、FR-APPR-01、FR-OPS-05、FR-WRITE-01..04 | tests/ac/ac03_delivery_test.go / TestAC03DeliveryLoop | ac.ps1 -Run TestAC03 -Strict | R4/R5 | 骨架 | 自动 + T3 人工计时 |
 | AC-04 | 跨部门挑战与决策 | FR-REV-01/02、FR-DEB-01..04、FR-DEC-01/02、FR-ESC-01、FR-APPR-01/02 | tests/ac/ac04_debate_test.go / TestAC04CrossDepartmentDebate | ac.ps1 -Run TestAC04 -Strict | R6 | 骨架 | 自动（夹具注入触发） |
 | AC-05 | 记忆回忆与纠正 | FR-MEM-01..12、FR-CHAT-10、FR-SEC-06 | tests/ac/ac05_memory_recall_test.go / TestAC05MemoryRecallAndCorrect | ac.ps1 -Run TestAC05 -Strict | R7 | 骨架 | 自动 + 质量人工 |
-| AC-06 | 检索与审计 | FR-SRCH-01..07、FR-CHAT-11、FR-SEC-06、FR-OPS-02 | tests/ac/ac06_search_audit_test.go / TestAC06SearchAndAudit | ac.ps1 -Run TestAC06 -Strict | R1/R8 | 骨架 | 自动 + 性能基准 |
-| AC-07 | 崩溃、重启与断线 | FR-CHAT-05、FR-TASK-06、FR-OPS-06、NFR-REL-01..07 | tests/ac/ac07_recovery_test.go / TestAC07CrashRestartOffline | ac.ps1 -Run TestAC07 -Strict | R1/R8 | 骨架 | 自动 + 真实进程/人工 |
+| AC-06 | 检索与审计 | FR-SRCH-01..07、FR-CHAT-11、FR-SEC-06、FR-OPS-02 | tests/ac/ac06_search_audit_test.go / TestAC06SearchAndAudit | ac.ps1 -Run TestAC06 | R1/R8 | **R1 通过（部分）**：中文 2 字/过滤/删除不可搜/重建/审计链；ACL（task-25）/导出/10 万性能待 R8 | 自动 + 性能基准 |
+| AC-07 | 崩溃、重启与断线 | FR-CHAT-05、FR-TASK-06、FR-OPS-06、NFR-REL-01..07 | tests/ac/ac07_recovery_test.go / TestAC07CrashRestartOffline | ac.ps1 -Run TestAC07 | R1/R8 | **R1 通过（部分）**：SSE 补齐/幂等/重启/中断 turn/墓碑/索引恢复；真实 kill/模型超时/1h 演练 R2/R8 | 自动 + 真实进程/人工 |
 | AC-08 | 安全与权限 | FR-SEC-01..07、NFR-SEC-01..08 | tests/ac/ac08_security_test.go / TestAC08SecurityAndPermissions | ac.ps1 -Run TestAC08 -Strict | R2/R8 | 骨架 | 自动 + 恶意网页人工 |
 | AC-09 | 预算与暂停 | FR-OPS-05、FR-SEC-07、FR-OBS-03 | tests/ac/ac09_budget_test.go / TestAC09BudgetAndPause | ac.ps1 -Run TestAC09 -Strict | R8 | 骨架 | 自动（预算注入） |
 | AC-10 | 备份、导出与恢复 | FR-OPS-01/02、FR-MEM-12、NFR-REL-05 | tests/ac/ac10_backup_test.go / TestAC10BackupExportRestore | ac.ps1 -Run TestAC10 -Strict | R8 | 骨架 | 自动 + 第二数据目录 e2e |
@@ -48,6 +48,17 @@ go test -tags=acceptance ./tests/ac -v -run TestAC01
 | AC-13 | 注意力、收件箱与审批 | FR-CHAT-01/06、FR-ASST-06、FR-APPR-02、FR-OPS-07、FR-SEC-07 | tests/ac/ac13_inbox_test.go / TestAC13AttentionInboxApprovals | ac.ps1 -Run TestAC13 -Strict | R3/R8 | 骨架 | 自动（TTL/沉默注入） |
 | AC-14 | 群聊与 Agent 管理 | FR-CHAT-14/15/16、FR-TEAM-06、FR-SEC-07 | tests/ac/ac14_group_chat_test.go / TestAC14GroupChatAndAgentLifecycle | ac.ps1 -Run TestAC14 -Strict | R3 | 骨架 | 自动 + 观察者人工 |
 | AC-15 | 并发写入与变更时间线 | FR-WRITE-01..04、FR-OPS-06、FR-SEC-03 | tests/ac/ac15_write_test.go / TestAC15ConcurrentWriteTimeline | ac.ps1 -Run TestAC15 -Strict | R5 | 骨架 | 自动（并发/裁剪） |
+
+### 2.1 最近验证记录（R1，2026-11-17）
+
+~~~text
+命令: .\scripts\ac.ps1            (mode=mock, strict=off, run=all)
+结果: AC-01 PASS 0.04s | AC-06 PASS 0.03s | AC-07 PASS 5.15s
+      其余 AC-02..05、08..15 = SKIP（骨架，未实现）
+依赖: R1 platform/store/search（setup、消息、检索、SSE、软删除、索引重建）
+环境: Windows / Go 1.27.4；临时数据目录；无真实 DeepSeek 调用
+备注: AC-01/07 的 R2/R8 子步骤仍 SkipSkeleton；本轮不作为发布通过
+~~~
 
 ## 3. 夹具与 AC 的对应
 
@@ -103,13 +114,14 @@ AC-XX <名称> | 模式: mock|deepseek | strict: on|off | 日期/commit:
 
 ## 6. 当前已知缺口（Q1）
 
-1. 15 个 AC 全部骨架 skip；R1 起按轮次点亮（建议顺序 AC-01/02 → AC-03/12 → AC-04 → AC-05/11 → AC-06/07/08 → AC-09/10/13 → AC-14/15）。
+1. AC-01/AC-06/AC-07 已在 R1 点亮为真实 HTTP/存储测试（AC-01/07 的 R2/R8 子步骤仍 SkipSkeleton）；其余 12 个 AC 仍为骨架 skip。点亮顺序建议：AC-02 → AC-03/12 → AC-04 → AC-05/11 → AC-08 → AC-09/10/13 → AC-14/15。
+   注意：AC-01/06/07 默认模式可 PASS；不要加 -Strict，因为 AC-01/07 的 R2/R8 子步骤仍是 SkipSkeleton（strict 会按设计失败）。R9 发布前这些子步骤必须全部实现。
 2. AC-07 的「kill 主进程」需要真实二进制启动器（os/exec + 临时 data-dir）；当前 harness 只覆盖 in-process 断线/重启存储恢复，杀进程步骤需 e2e helper。
 3. AC-10 恢复需要第二个 data-dir 与真实二进制；in-process harness 只能覆盖备份产物与索引重建。
 4. AC-06 的 10 万条 p95/Recall 需 tests/bench 语料与 benchmark 脚本（R1 search 落地后）。
 5. AC-12 的「同一对 Agent 互审 ≥5 次 100% 通过」需要测试内批量创建裁决（或新增 fixture 选项），当前 seed 只有 1 条 verdict。
 6. AC-14 临时桥到期需要可控时钟或短 TTL；seed bridge_1 为 1h，实现时用注入/短 TTL 验证。
-7. 生产代码当前存在并行开发中的编译错误（internal/memory、internal/core）；tests/ac 可独立编译，但 scripts/test.ps1 需等对应 owner 修复后全绿。
+7. 生产代码仍在并行开发（R5 tools 等包缺失文件/语法错误），导致 go vet ./... 与 go test ./... 暂未全绿；tests/ac 只依赖 platform/store/search，可独立编译运行。scripts/test.ps1 的 gofmt 检查已改为绝对路径调用 GOROOT/bin/gofmt（PATH 里只有 go shim），当前仍会被其它 owner 的 4 个未格式化文件与 tools 构建失败阻断。
 
 ## 7. 维护规则
 

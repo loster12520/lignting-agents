@@ -14,7 +14,7 @@ const (
 	BlueprintRejected   = "rejected"
 	BlueprintSuperseded = "superseded"
 
-	ProvisionPlanned        = "planned"
+	ProvisionPlanned         = "planned"
 	ProvisionPlatformCreated = "platform_created"
 	ProvisionCoreCreated     = "core_created"
 	ProvisionVerified        = "verified"

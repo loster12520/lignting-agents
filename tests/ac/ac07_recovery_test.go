@@ -88,8 +88,11 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 		}
 		return events
 	}
-	// Setup greeting + 3 messages = 4 events.
-	events := readSSE(0, 4)
+	// Setup creates conversation.created + greeting message.created; the three
+	// posted messages add message.created. Read until the stream is idle: the
+	// exact number of conversation events is not part of this AC, but every
+	// message must be replayable from seq 0.
+	events := readSSE(0, 0)
 	var lastEventSeq int64
 	messageCreated := 0
 	for _, ev := range events {
@@ -100,8 +103,11 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 			messageCreated++
 		}
 	}
-	if messageCreated < 3 {
-		t.Fatalf("message.created events = %d, want >=3", messageCreated)
+	if messageCreated < 4 {
+		t.Fatalf("message.created events = %d, want >=4 (greeting + 3 posts); SSE events=%d", messageCreated, len(events))
+	}
+	if lastEventSeq == 0 {
+		t.Fatal("SSE replay returned no events")
 	}
 
 	// A new message after the cursor is delivered exactly once by SSE.
@@ -111,13 +117,13 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 		t.Fatalf("incremental event = %+v, want message.created after %d", next[0], lastEventSeq)
 	}
 	var payload struct {
-		ID string `json:"id"`
+		ObjectID string `json:"object_id"`
 	}
 	if err := jsonUnmarshal(next[0].Data, &payload); err != nil {
 		t.Fatalf("decode event payload: %v", err)
 	}
-	if payload.ID != m4["id"] {
-		t.Fatalf("incremental event object id = %q, want %q", payload.ID, m4["id"])
+	if payload.ObjectID != m4["id"] {
+		t.Fatalf("incremental event object id = %q, want %q", payload.ObjectID, m4["id"])
 	}
 	lastEventSeq = next[0].ID
 
@@ -145,6 +151,11 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 		t.Fatalf("m2 id missing: %v", m2)
 	}
 	h.ExpectStatus(t, http.MethodDelete, "/api/messages/"+m2["id"].(string), nil, http.StatusOK)
+	deleteEvent := readSSE(lastEventSeq, 1)
+	if deleteEvent[0].Type != "message.deleted" {
+		t.Fatalf("deletion event type = %q, want message.deleted", deleteEvent[0].Type)
+	}
+	lastEventSeq = deleteEvent[0].ID
 
 	// Restart: stop HTTP + close SQLite, reopen/migrate, new listener. This is
 	// the in-process equivalent of the process-kill half of AC-07; the real

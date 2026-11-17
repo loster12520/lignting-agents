@@ -161,11 +161,15 @@ a:hover { text-decoration: underline; }
   height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 /* 侧栏 */
 .sidebar {
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 0;
@@ -278,7 +282,14 @@ a:hover { text-decoration: underline; }
 .conn.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
 
 /* ---------- 8. 主区 ---------- */
-.main { min-width: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: rgba(10,12,16,.55); }
+.main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0,1fr) auto;
+  background: rgba(10,12,16,.55);
+}
 .topbar {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 20px; min-height: 56px;

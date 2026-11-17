@@ -222,7 +222,7 @@ func (r *fakeRepo) AddMemoryRead(ctx context.Context, rec MemoryRead) error {
 	return nil
 }
 
-func (r *fakeRepo) MaxManualVersion(ctx context.Context, key ManualKey) (int, error) {
+func (r *fakeRepo) MaxManualVersion(ctx context.Context, key domain.MemoryManualKey) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	max := 0
@@ -234,7 +234,7 @@ func (r *fakeRepo) MaxManualVersion(ctx context.Context, key ManualKey) (int, er
 	return max, nil
 }
 
-func (r *fakeRepo) ListManuals(ctx context.Context, key ManualKey) ([]domain.PromptManual, error) {
+func (r *fakeRepo) ListManuals(ctx context.Context, key domain.MemoryManualKey) ([]domain.PromptManual, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]domain.PromptManual, 0, len(r.manuals))

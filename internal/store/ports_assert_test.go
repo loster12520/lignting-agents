@@ -13,5 +13,6 @@ import (
 var _ core.Store = (*store.Store)(nil)
 var _ core.AtomicReplyStore = (*store.Store)(nil)
 var _ core.TurnStore = (*store.Store)(nil)
+var _ core.OrgStore = (*store.Store)(nil)
 var _ write.Repository = (*store.Store)(nil)
 var _ write.AuditSink = (*store.Store)(nil)

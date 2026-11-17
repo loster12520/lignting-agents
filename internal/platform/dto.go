@@ -88,6 +88,7 @@ type settingsDTO struct {
 	Model            string  `json:"model"`
 	ModelMode        string  `json:"model_mode"`
 	HasAPIKey        bool    `json:"has_api_key"`
+	HasPassword      bool    `json:"has_password"`
 	SearchIndexState string  `json:"search_index_state"`
 	Version          string  `json:"version"`
 	SchemaVersion    int     `json:"schema_version"`
@@ -134,6 +135,7 @@ func (s *Server) settingsData(ctx context.Context, owner *store.Owner) (settings
 		Model:            model,
 		ModelMode:        s.cfg.ModelMode,
 		HasAPIKey:        s.hasAPIKey(),
+		HasPassword:      owner != nil && owner.HasPassword(),
 		SearchIndexState: s.indexStateValue(),
 		Version:          config.Version,
 		SchemaVersion:    store.SchemaVersion,

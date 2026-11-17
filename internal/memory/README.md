@@ -22,12 +22,12 @@ type Repo interface {
     InsertMemory(ctx, m domain.Memory) error
     GetMemory(ctx, id string) (domain.Memory, error)
     UpdateMemory(ctx, m domain.Memory, expectedVersion int) error
-    ListMemories(ctx, f Filter) ([]domain.Memory, error)
-    CountMemories(ctx, f Filter) (int, error)
-    AppendMemoryEvent(ctx, ev MemoryEvent) error
-    AddMemoryRead(ctx, r MemoryRead) error
-    MaxManualVersion(ctx, key ManualKey) (int, error)
-    ListManuals(ctx, key ManualKey) ([]domain.PromptManual, error)
+    ListMemories(ctx, f domain.MemoryFilter) ([]domain.Memory, error)
+    CountMemories(ctx, f domain.MemoryFilter) (int, error)
+    AppendMemoryEvent(ctx, ev domain.MemoryEvent) error
+    AddMemoryRead(ctx, r domain.MemoryRead) error
+    MaxManualVersion(ctx, key domain.MemoryManualKey) (int, error)
+    ListManuals(ctx, key domain.MemoryManualKey) ([]domain.PromptManual, error)
     GetManual(ctx, id string) (domain.PromptManual, error)
     InsertManual(ctx, m domain.PromptManual) error
     UpdateManualStatus(ctx, id, status string) error
@@ -37,6 +37,10 @@ type Extractor interface { Extract(ctx, ExtractionRequest) ([]Candidate, error) 
 type Compressor interface { Compress(ctx, CompressionRequest) (CompressionResult, error) }
 ```
 
+类型说明：`memory.Filter / MemoryEvent / MemoryRead` 是 `domain` 同名类型的**别名**，
+手册参数在 Repo 边界用 `domain.MemoryManualKey`（memory 内部仍保留带 String/validate 的 `ManualKey`）。
+因此 **internal/store 实现 Repo 时不需要 import internal/memory**，只依赖 internal/domain。
+
 实现契约（必须）：
 1. `UpdateMemory` 用 `WHERE id=? AND version=?`，影响行数 0 → 返回 `memory.ErrConflict`，并写入 `m.Version`。
 2. `GetMemory` 未命中 → `memory.ErrNotFound`（Service 映射 404）。
@@ -44,7 +48,36 @@ type Compressor interface { Compress(ctx, CompressionRequest) (CompressionResult
    `Tags` 为「包含任一」匹配（tags 逗号分隔）；`CreatedSince/Before` 按 RFC3339 比较。
 4. `AppendMemoryEvent` **逐字保存 Detail**：压缩前快照（原文全文）就存在这里，禁止截断。
 5. 表结构不改：用 schema.sql 的 `memories / memory_events / prompt_manuals / memory_reads`（330–391 行）。
-6. 现成 fake：`fake_test.go`（同包测试用）；platform 集成测试可复制其语义或另写。
+6. 手册版本：`ListManuals` 不保证顺序（store 返回 version desc，fake 返回 asc），调用方按 `Version` 判断（Service 已如此实现）。
+7. 现成 fake：`fake_test.go`（同包单测用）。
+
+### 与真实仓储联调（已完成）
+
+```go
+// internal/memory/storerepo.go
+repo := memory.NewStoreRepo(st) // st 为 *store.Store
+svc, _ := memory.NewService(memory.Options{Repo: repo, ...})
+```
+
+`NewStoreRepo` 只做一件事：把 store 的哨兵错误映射成本包的哨兵，
+让 Service/上层用 `errors.Is(err, memory.ErrConflict | memory.ErrNotFound)` 判断，不需要感知 store 包：
+
+| store 返回 | memory 适配后 |
+|---|---|
+| `store.ErrNotFound` | `memory.ErrNotFound`（domain 404） |
+| `store.ErrConflict`（乐观锁 0 行 / 重复主键 / 手册唯一约束） | `memory.ErrConflict`（domain 409） |
+
+依赖方向：memory → store（方案允许；store 只依赖 domain，不需要 import memory）。
+
+集成测试（真实 SQLite + Migrate，build tag `integration`）：
+
+```bash
+go test ./internal/memory -tags integration -run Integration -count=1
+```
+
+覆盖：`*store.Store` 满足 `memory.Repo` 的编译断言、Insert/Get/Update 乐观锁、双时间 valid_to 落库、
+墓碑不可读/不注入、读痕落 memory_reads、快照 detail 逐字落 memory_events（含压缩前全文）、
+手册 propose/approve/supersede/rollback、human-only 工具读取与越权留痕、哨兵映射。
 
 ## 3. core 接线
 
@@ -91,7 +124,7 @@ func (a injectAdapter) Inject(ctx context.Context, q core.MemoryQuery) ([]domain
   员工/部门主管一律拒绝；墓碑后任何路径不可读。
 - **投毒防护**：命中 `DetectInjection` 的候选打 `untrusted` 标签，禁止作为 L4 来源（除非人类亲自编辑，AC-11）。
 
-## 6. 测试矩阵（`go test ./internal/memory`，覆盖 ~75%）
+## 6. 测试矩阵（`go test ./internal/memory`，覆盖 ~74%；另加 `-tags integration` 跑真实仓储）
 
 | 覆盖点 | 用例 |
 |---|---|
@@ -112,7 +145,7 @@ func (a injectAdapter) Inject(ctx context.Context, q core.MemoryQuery) ([]domain
 
 ## 7. 已知缺口（不阻塞 R7 逻辑，需要其他 owner）
 
-1. **store 适配未实现**：Repo 12 个方法需 platform-dev 落到 *store.Store 或 store.MemoryRepo；本包只用 fake 验证。
+1. ~~store 适配未实现~~：platform-dev 已在 `internal/store/memory.go` 实现 12 个方法，本包 `NewStoreRepo` 适配并用 integration 测试验证通过。剩余接线：cmd/wire 用 `NewStoreRepo(store)` 构造 Service。
 2. **core 接口需升级**：现有 `MemoryInjector.Inject` 只返回 `[]domain.Memory`，拿不到 context.request 快照/手册版本/降级原因。
 3. **事件触发管线**：`Extractor` 已定义端口，但「任务关闭/返工/裁决」到抽取的编排在 core（本包不订阅事件）。
 4. **FR-MEM-12 导出/备份**：属于 store/platform 的备份路径，本包只保证档案可序列化（domain.Memory 全字段 JSON）。

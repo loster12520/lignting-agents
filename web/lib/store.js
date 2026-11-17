@@ -56,7 +56,7 @@ export function emit(type, payload) {
   if (set) {
     const arr = Array.from(set);
     for (let i = 0; i < arr.length; i++) {
-      try { arr[i](payload); } catch (e) { console.error("[lignting] 事件处理失败", type, e); }
+      try { arr[i](payload); } catch (e) { console.error("[lignting] 事件处理失败", type, (e && e.stack) ? e.stack : e); }
     }
   }
   const all = listeners.get("*");

@@ -27,8 +27,10 @@ type Repo interface {
 	AppendMemoryEvent(ctx context.Context, ev MemoryEvent) error
 	AddMemoryRead(ctx context.Context, r MemoryRead) error
 
-	MaxManualVersion(ctx context.Context, key ManualKey) (int, error)
-	ListManuals(ctx context.Context, key ManualKey) ([]domain.PromptManual, error)
+	MaxManualVersion(ctx context.Context, key domain.MemoryManualKey) (int, error)
+	// ListManuals 返回该 key 下全部版本；不保证顺序（store 按 version desc，fake 按 asc），
+	// 调用方必须按 Version 字段自行判断（Service 已如此实现）。
+	ListManuals(ctx context.Context, key domain.MemoryManualKey) ([]domain.PromptManual, error)
 	GetManual(ctx context.Context, id string) (domain.PromptManual, error)
 	InsertManual(ctx context.Context, m domain.PromptManual) error
 	UpdateManualStatus(ctx context.Context, id, status string) error

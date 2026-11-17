@@ -71,7 +71,9 @@ export class ShimElement {
   get isConnected() { return isConnected(this); }
 
   appendChild(node) {
-    if (!node) return node;
+    if (!node || (node.nodeType !== 1 && node.nodeType !== 3 && node.nodeType !== 11)) {
+      throw new TypeError("Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'.");
+    }
     if (node.nodeType === 11) {
       node.childNodes.slice().forEach((c) => this.appendChild(c));
       return node;
@@ -108,8 +110,10 @@ export class ShimElement {
     if (name === "class") this.className = String(value);
     if (name === "title") this.title = String(value);
     // 真实 DOM 中以下属性是 IDL 反射的，测试需要读到同名 property
+    const BOOL_ATTRS = ["disabled", "checked", "selected", "readonly", "multiple"];
+    if (BOOL_ATTRS.indexOf(name) >= 0) { this[name] = true; return; }
     const REFLECT = ["type", "value", "placeholder", "name", "href", "min", "max",
-      "step", "maxlength", "rows", "autocomplete", "target", "rel", "disabled"];
+      "step", "maxlength", "rows", "autocomplete", "target", "rel"];
     if (REFLECT.indexOf(name) >= 0) this[name] = String(value);
   }
   getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; }
@@ -146,6 +150,9 @@ export class ShimElement {
 export class ShimFragment {
   constructor() { this.nodeType = 11; this.childNodes = []; this.parentNode = null; }
   appendChild(node) {
+    if (!node || (node.nodeType !== 1 && node.nodeType !== 3 && node.nodeType !== 11)) {
+      throw new TypeError("Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'.");
+    }
     if (node.parentNode) node.parentNode.removeChild(node);
     node.parentNode = this;
     this.childNodes.push(node);
