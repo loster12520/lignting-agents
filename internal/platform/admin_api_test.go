@@ -25,8 +25,8 @@ func TestAdminBackupExportRestoreImportEmergencyStopAudit(t *testing.T) {
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Fatalf("backup file missing: %v", err)
 	}
-	if d["manifest"].(map[string]any)["schema_version"].(float64) != 2 {
-		t.Fatalf("backup schema version = %v", d["manifest"])
+	if got := d["manifest"].(map[string]any)["schema_version"].(float64); got != float64(store.SchemaVersion) {
+		t.Fatalf("backup schema version = %v, want %d", d["manifest"], store.SchemaVersion)
 	}
 	status, out = e.do("GET", "/api/admin/backups", nil)
 	if items, _ := e.mustOK(status, out)["items"].([]any); len(items) != 1 {

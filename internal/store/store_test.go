@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lignting/lignting-agents/internal/domain"
@@ -74,6 +75,66 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 	if version != store.SchemaVersion {
 		t.Fatalf("version = %d, want %d", version, store.SchemaVersion)
+	}
+}
+
+// TestMigrateUpgradeAddsSearchTermsDocIndex 模拟 v2 旧库升级：
+// v3 迁移必须补上 idx_search_terms_doc，否则按 doc_id 删除倒排词会退化成全表扫描
+// （10 万条消息的写入/重建因此变成 O(N²)）。
+func TestMigrateUpgradeAddsSearchTermsDocIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db.sqlite")
+	st := openTestStore(t, path)
+	ctx := context.Background()
+	// 回退成 v2：删掉 v3 的索引与迁移记录。
+	if _, err := st.DB.Exec("DROP INDEX IF EXISTS idx_search_terms_doc"); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if _, err := st.DB.Exec("DELETE FROM schema_migrations WHERE version=3"); err != nil {
+		t.Fatalf("rollback migration row: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close v2 store: %v", err)
+	}
+
+	up, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = up.Close() }()
+	if err := up.Migrate(ctx); err != nil {
+		t.Fatalf("upgrade migrate: %v", err)
+	}
+	var version int
+	if err := up.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatalf("schema version: %v", err)
+	}
+	if version != store.SchemaVersion {
+		t.Fatalf("version = %d, want %d", version, store.SchemaVersion)
+	}
+	var indexName string
+	if err := up.DB.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_search_terms_doc'").Scan(&indexName); err != nil {
+		t.Fatalf("idx_search_terms_doc 缺失: %v", err)
+	}
+	// 直接看查询计划：按 doc_id 删除必须命中索引，不能是全表 SCAN。
+	rows, err := up.DB.Query("EXPLAIN QUERY PLAN DELETE FROM search_terms WHERE doc_id='x'")
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan += detail + " "
+	}
+	if strings.Contains(plan, "SCAN search_terms") {
+		t.Fatalf("按 doc_id 删除仍是全表扫描，O(N²) 回来了: %s", plan)
+	}
+	if !strings.Contains(plan, "idx_search_terms_doc") {
+		t.Fatalf("查询计划未使用 idx_search_terms_doc: %s", plan)
 	}
 }
 

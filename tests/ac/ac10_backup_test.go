@@ -49,7 +49,7 @@ func TestAC10BackupExportRestore(t *testing.T) {
 	if backup.Path == "" || backup.Size <= 0 || len(backup.SHA256) != 64 {
 		t.Fatalf("backup result = %+v", backup)
 	}
-	if backup.Manifest.SchemaVersion != 2 || backup.Manifest.BackupID == "" {
+	if backup.Manifest.SchemaVersion != store.SchemaVersion || backup.Manifest.BackupID == "" {
 		t.Fatalf("backup manifest = %+v", backup.Manifest)
 	}
 	if !backup.Manifest.Redaction.SecretsExcluded || !backup.Manifest.Redaction.ConfigRedacted {
@@ -84,7 +84,7 @@ func TestAC10BackupExportRestore(t *testing.T) {
 		SchemaVersion int            `json:"schema_version"`
 	}
 	h.PostData(t, "/api/admin/export", map[string]any{}, &exported)
-	if exported.Dir == "" || !exported.Redacted || exported.SchemaVersion != 2 {
+	if exported.Dir == "" || !exported.Redacted || exported.SchemaVersion != store.SchemaVersion {
 		t.Fatalf("export result = %+v", exported)
 	}
 	if exported.Counts["messages"] == 0 || exported.Counts["tasks"] == 0 {
@@ -125,7 +125,7 @@ func TestAC10BackupExportRestore(t *testing.T) {
 	h.PostData(t, "/api/admin/restore", map[string]any{
 		"backup_path": backup.Path, "target_dir": restoreTarget, "confirm": true,
 	}, &restored)
-	if restored.BackupID != backup.Manifest.BackupID || restored.SchemaVersion != 2 {
+	if restored.BackupID != backup.Manifest.BackupID || restored.SchemaVersion != store.SchemaVersion {
 		t.Fatalf("restore manifest = %+v", restored)
 	}
 	verifyRestoredDB(t, filepath.Join(restoreTarget, "lignting.db"), "restore")

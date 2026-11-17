@@ -14,8 +14,8 @@ func TestAttachmentsStoreAndMigrateV2(t *testing.T) {
 	if err := st.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatalf("migration version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != store.SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, store.SchemaVersion)
 	}
 	var table string
 	if err := st.DB.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='attachments'").Scan(&table); err != nil {

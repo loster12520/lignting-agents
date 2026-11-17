@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lignting/lignting-agents/internal/domain"
 	"github.com/lignting/lignting-agents/internal/search"
@@ -20,6 +21,11 @@ type SeedStats struct {
 	// GoldQueries: 唯一英文 token -> 目标消息 ID（Recall@10 金标准）。
 	GoldQueries map[string]string
 	Terms       int64
+	// InsertMS 是写消息 + 同步倒排索引的总耗时（不含建会话/部门与统计查询）。
+	InsertMS int64
+	// LoginConversation 是「登录」命中数最多的会话，供「过滤会话」用例使用，
+	// 避免选到数学上不可能命中的会话导致 0 条结果的假通过。
+	LoginConversation string
 }
 
 var chineseNoise = []string{
@@ -78,6 +84,8 @@ func Seed(ctx context.Context, st *store.Store, total int) (SeedStats, error) {
 	}
 
 	const batch = 1000
+	loginHits := make([]int, len(convs))
+	insertStart := time.Now()
 	for start := 0; start < total; start += batch {
 		end := start + batch
 		if end > total {
@@ -105,6 +113,9 @@ func Seed(ctx context.Context, st *store.Store, total int) (SeedStats, error) {
 				if err := idx.IndexTx(tx, doc); err != nil {
 					return err
 				}
+				if strings.Contains(content, "登录") {
+					loginHits[i%len(convs)]++
+				}
 				// 前 100 条消息作为 Recall 金标准 token（goldqueryNN 唯一词）。
 				if i < 100 && i%5 == 0 {
 					stats.GoldQueries[fmt.Sprintf("goldquery%02d", i/5)] = msgID
@@ -117,6 +128,14 @@ func Seed(ctx context.Context, st *store.Store, total int) (SeedStats, error) {
 		}
 		stats.Messages = end
 	}
+	stats.InsertMS = time.Since(insertStart).Milliseconds()
+	best := 0
+	for i := range loginHits {
+		if loginHits[i] > loginHits[best] {
+			best = i
+		}
+	}
+	stats.LoginConversation = stats.Conversations[best]
 	if err := st.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM search_terms").Scan(&stats.Terms); err != nil {
 		return stats, err
 	}

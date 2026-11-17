@@ -22,7 +22,7 @@ var schemaFiles embed.FS
 
 // SchemaVersion 是内嵌 schema 的迁移版本，保存在 schema_migrations。
 // v1 = 冻结的 schema.sql；v2+ = migrations/NNN_*.sql 按版本追加。
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // 仓储层错误。平台层负责把它们映射为 HTTP 错误码；store 不做业务规则。
 var (

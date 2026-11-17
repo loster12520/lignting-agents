@@ -5,7 +5,9 @@ package bench
 import (
 	"context"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,13 +15,41 @@ import (
 	"github.com/lignting/lignting-agents/internal/store"
 )
 
-const totalMessages = 100000
+const defaultTotalMessages = 100000
+
+// benchMessages 返回本次基准的消息数。默认 10 万（发布基准必须用默认值）；
+// 定位热点时可用 BENCH_MESSAGES 缩小规模，观察各阶段耗时随 N 的增长曲线。
+func benchMessages(t *testing.T) int {
+	t.Helper()
+	raw := os.Getenv("BENCH_MESSAGES")
+	if raw == "" {
+		return defaultTotalMessages
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		t.Fatalf("BENCH_MESSAGES 必须是正整数，得到 %q", raw)
+	}
+	t.Logf("BENCH_MESSAGES=%d（非默认规模，结果不得直接作为发布基准）", n)
+	return n
+}
+
+func dbSizeMB(t *testing.T, st *store.Store) float64 {
+	t.Helper()
+	fi, err := os.Stat(st.Path)
+	if err != nil {
+		return 0
+	}
+	return float64(fi.Size()) / (1024 * 1024)
+}
 
 type querySpec struct {
 	name   string
 	q      string
 	filter search.Filter
 	limit  time.Duration // p95 阈值
+	// wantHits 要求该用例至少命中一条：防止过滤条件写错（如选了不含该词的会话）
+	// 导致「0 条结果也很快」的假通过。
+	wantHits bool
 }
 
 func openBenchStore(t *testing.T) *store.Store {
@@ -31,6 +61,9 @@ func openBenchStore(t *testing.T) *store.Store {
 	if err := st.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// 与生产一致：server.go 在启动时注入 indexer，写入即同步倒排索引。
+	// 不注入的话「写入后立即可搜」这条用例根本没走生产路径。
+	st.SetIndexer(search.NewIndexer())
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
@@ -64,6 +97,9 @@ func measure(t *testing.T, st *store.Store, spec querySpec, warmRuns int) (p50, 
 		ds = append(ds, time.Since(start))
 		if i == 0 {
 			t.Logf("%s: total=%d first-page=%d", spec.name, rs.Total, len(rs.Items))
+			if spec.wantHits && rs.Total == 0 {
+				t.Errorf("%s: 期望至少命中 1 条，实际 0 条（过滤条件/种子数据不匹配）", spec.name)
+			}
 		}
 	}
 	return percentile(ds, 0.50), percentile(ds, 0.95)
@@ -75,12 +111,14 @@ func TestSearchPerf100k(t *testing.T) {
 	}
 	ctx := context.Background()
 	st := openBenchStore(t)
+	total := benchMessages(t)
 	seedStart := time.Now()
-	stats, err := Seed(ctx, st, totalMessages)
+	stats, err := Seed(ctx, st, total)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	t.Logf("seed: messages=%d terms=%d conversations=%d elapsed=%s", stats.Messages, stats.Terms, len(stats.Conversations), time.Since(seedStart))
+	t.Logf("seed: messages=%d terms=%d conversations=%d elapsed=%s insert=%dms dbsize=%.1fMB",
+		stats.Messages, stats.Terms, len(stats.Conversations), time.Since(seedStart), stats.InsertMS, dbSizeMB(t, st))
 
 	specs := []querySpec{
 		{name: "中文2字(限流)", q: "限流", filter: search.Filter{}, limit: 150 * time.Millisecond},
@@ -91,7 +129,7 @@ func TestSearchPerf100k(t *testing.T) {
 		{name: "英文大写(LOGIN)", q: "LOGIN", filter: search.Filter{}, limit: 300 * time.Millisecond},
 		{name: "代码标识符(getUserById)", q: "getUserById", filter: search.Filter{}, limit: 300 * time.Millisecond},
 		{name: "多词(限流 login)", q: "限流 login", filter: search.Filter{}, limit: 300 * time.Millisecond},
-		{name: "过滤会话", q: "登录", filter: search.Filter{ConversationID: stats.Conversations[3]}, limit: 150 * time.Millisecond},
+		{name: "过滤会话", q: "登录", filter: search.Filter{ConversationID: stats.LoginConversation}, limit: 150 * time.Millisecond, wantHits: true},
 		{name: "过滤部门", q: "登录", filter: search.Filter{DepartmentID: "dept_bench_1"}, limit: 150 * time.Millisecond},
 		{name: "过滤作者", q: "登录", filter: search.Filter{SenderID: store.OwnerID}, limit: 150 * time.Millisecond},
 		{name: "过滤时间窗", q: "登录", filter: search.Filter{From: "2020-01-01T00:00:00.000000000Z", To: "2030-01-01T00:00:00.000000000Z"}, limit: 150 * time.Millisecond},
@@ -166,9 +204,11 @@ func TestSearchPerf100k(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	t.Logf("REBUILD docs=%d terms=%d elapsed=%s (-=search during rebuild)", rebuild.Documents, rebuild.Terms, time.Since(rebuildStart))
-	if rebuild.Documents != int64(stats.Messages) {
-		t.Errorf("rebuild documents=%d want %d", rebuild.Documents, stats.Messages)
+	t.Logf("REBUILD docs=%d terms=%d elapsed=%s dbsize=%.1fMB (-=search during rebuild)", rebuild.Documents, rebuild.Terms, time.Since(rebuildStart), dbSizeMB(t, st))
+	// 上一段「写入后立即可搜」又插了 1 条消息，重建应覆盖 seed + 这 1 条。
+	wantDocs := int64(stats.Messages) + 1
+	if rebuild.Documents != wantDocs {
+		t.Errorf("rebuild documents=%d want %d", rebuild.Documents, wantDocs)
 	}
 	// 重建后仍有结果
 	if rs, err := search.Search(ctx, st.DB, "限流", search.Filter{}); err != nil || rs.Total == 0 {
