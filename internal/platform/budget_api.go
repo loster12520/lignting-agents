@@ -179,21 +179,39 @@ func (s *Server) scanBudgetEvents(ctx context.Context) (int, error) {
 		_ = json.Unmarshal([]byte(ev.Payload), &payload)
 		scope, _ := payload["scope"].(string)
 		key, _ := payload["key"].(string)
+		agentID, _ := payload["agent_id"].(string)
+		taskID, _ := payload["task_id"].(string)
+		msg, _ := payload["message"].(string)
 		used, _ := payload["used"].(float64)
 		limit, _ := payload["limit"].(float64)
+		// 周期键：warning 用 key（scope+周期）；blocked 无 key，用 日/月 粒度去重，
+		// 避免每次被拒都刷一条通知（core 每次拒绝都会写 blocked 事件）。
+		period := ev.CreatedAt
+		if len(period) >= 10 {
+			period = period[:10]
+			if strings.Contains(scope, "month") && len(ev.CreatedAt) >= 7 {
+				period = ev.CreatedAt[:7]
+			}
+		}
 		level := "need_know"
 		title := "预算使用达到 80%"
 		objectType := "budget"
 		objectID := scope + ":" + key
-		if ev.Type == "budget.blocked" || (limit > 0 && used >= limit) {
-			level = "blocking"
-			title = "预算已用尽，相关 Agent/任务将被暂停"
-			objectType = "budget_blocked"
-			objectID = scope + ":" + key
+		if objectID == ":" {
+			objectID = "budget:" + scope + ":" + period
 		}
 		body := "预算范围：" + scope
 		if key != "" {
 			body += "（周期 " + key + "）"
+		}
+		if ev.Type == "budget.blocked" || (limit > 0 && used >= limit) {
+			level = "blocking"
+			title = "预算已用尽，相关 Agent/任务已被暂停"
+			objectType = "budget_blocked"
+			objectID = "blocked:" + scope + ":" + taskID + ":" + agentID + ":" + period
+			if msg != "" {
+				body = msg
+			}
 		}
 		if limit > 0 {
 			body += "；已用 " + strconv.FormatFloat(used, 'f', 2, 64) + " / " + strconv.FormatFloat(limit, 'f', 2, 64)

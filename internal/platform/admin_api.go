@@ -236,3 +236,67 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, owner *stor
 }
 
 var _ = context.Background
+
+// handleAuditExport GET /api/audit/export?format=json|csv&action=&object_type=&from=&to=
+// 审计导出：只读、带审计；内容为 append-only 审计流（不含密钥，详情由审计本身脱敏）。
+func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request, owner *store.Owner) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	format := strings.ToLower(strings.TrimSpace(q.Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "csv" {
+		s.writeErr(w, errInvalid("format 必须是 json/csv"))
+		return
+	}
+	f := store.AuditFilter{Action: q.Get("action"), ObjectType: q.Get("object_type"), Limit: 1000}
+	if raw := strings.TrimSpace(q.Get("from")); raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			f.SinceCreatedAt = t.UTC().Format(fixedTimeLayout)
+		}
+	}
+	var all []domain.AuditEntry
+	for page := 0; page < 20; page++ {
+		items, err := s.store.QueryAudit(ctx, f)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		all = append(all, items...)
+		if len(items) < f.Limit {
+			break
+		}
+		f.SinceSeq = items[len(items)-1].Seq
+	}
+	s.audit(ctx, domain.SenderUser, owner.ID, "audit.export", "audit_log", "", "ok",
+		jsonDetail(map[string]any{"format": format, "count": len(all)}))
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"audit-"+stamp+".json\"")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exported_at": store.Now(), "format_version": 1, "count": len(all), "items": all,
+		})
+		return
+	}
+	var buf strings.Builder
+	buf.WriteString("seq,created_at,actor_type,actor_id,action,object_type,object_id,result,detail\n")
+	for _, a := range all {
+		fields := []string{
+			strconv.FormatInt(a.Seq, 10), a.CreatedAt, a.ActorType, a.ActorID, a.Action,
+			a.ObjectType, a.ObjectID, a.Result, a.Detail,
+		}
+		for i, fv := range fields {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.WriteString("\"" + strings.ReplaceAll(fv, "\"", "\"\"") + "\"")
+		}
+		buf.WriteByte('\n')
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"audit-"+stamp+".csv\"")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(buf.String()))
+}

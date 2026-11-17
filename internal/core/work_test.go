@@ -79,6 +79,11 @@ func TestG3EvidenceGateAndHumanApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	if g2 := gateApprovalID(t, store, task.ID, "g2_approval_id"); g2 == "" {
+		t.Fatal("高风险任务应自动创建 G2 审批")
+	} else if _, err := svc.DecideGate(ctx, g2, domain.ApprovalApproved, "owner", "G2 批准"); err != nil {
+		t.Fatalf("G2 approve: %v", err)
+	}
 	for _, to := range []string{"ready", "discussing", "in_progress", "in_review"} {
 		if _, err := svc.TransitionTask(ctx, sup, task.ID, to, "推进", ""); err != nil {
 			t.Fatalf("transition %s: %v", to, err)

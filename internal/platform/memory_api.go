@@ -159,7 +159,19 @@ func (s *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request, owne
 		s.writeErr(w, err)
 		return
 	}
+	visibility, err := normalizeMemoryVisibility(req.Visibility)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	entityType, err := normalizeMemoryEntityType(req.EntityType)
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
 	candidate := candidateFromRequest(req, access)
+	candidate.Visibility = visibility
+	candidate.EntityType = entityType
 	if req.Direct {
 		if !memory.CanWriteArchive(access) {
 			s.writeErr(w, errForbidden("只有人类/助理/部门主管可以直接写档案；员工请提交候选"))
@@ -216,7 +228,12 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request, owner
 		patch.Content = *req.Content
 	}
 	if req.Visibility != nil {
-		patch.Visibility = *req.Visibility
+		v, err := normalizeMemoryVisibility(*req.Visibility)
+		if err != nil {
+			s.writeErr(w, err)
+			return
+		}
+		patch.Visibility = v
 	}
 	if req.Confidence != nil {
 		patch.Confidence = *req.Confidence

@@ -250,6 +250,7 @@ func (s *Server) routes() {
 	mount("/api/admin/import", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleImport)})
 	mount("/api/admin/emergency-stop", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleEmergencyStop)})
 	mount("/api/audit", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleAudit)})
+	mount("/api/audit/export", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleAuditExport)})
 	mount("/api/approvals", map[string]http.HandlerFunc{http.MethodGet: s.authed(s.handleListApprovals)})
 	mount("/api/tasks/{id}/transition", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleTransitionTask)})
 	mount("/api/tasks/{id}/criteria/{cid}/evidence", map[string]http.HandlerFunc{http.MethodPost: s.authed(s.handleCriterionEvidence)})

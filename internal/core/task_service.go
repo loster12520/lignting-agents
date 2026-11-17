@@ -125,6 +125,16 @@ func (s *WorkService) CreateTask(ctx context.Context, actor domain.Agent, in Cre
 	})
 	s.emit(ctx, "task.updated", "task", created.ID, "agent", actor.ID, map[string]any{"status": created.Status, "created": true})
 	s.audit(ctx, "agent", actor.ID, "task.create", "task", created.ID, "ok", map[string]any{"department_id": created.DepartmentID})
+	if in.HighRisk {
+		appr, aerr := s.createGateApproval(ctx, actor, created, domain.ApprovalG2, "G2 技术方案/范围："+created.Title)
+		if aerr != nil {
+			return domain.Task{}, fmt.Errorf("core: 创建 G2 审批失败: %w", aerr)
+		}
+		created.Flags = mergeFlag(created.Flags, "g2_approval_id", appr.ID)
+		_ = s.store.UpdateTask(ctx, created)
+		s.emit(ctx, "approval.updated", "approval", appr.ID, "agent", actor.ID, map[string]any{"kind": domain.ApprovalG2, "task_id": created.ID, "status": appr.Status})
+		s.audit(ctx, "agent", actor.ID, "approval.request", "approval", appr.ID, "ok", map[string]any{"kind": domain.ApprovalG2, "task_id": created.ID})
+	}
 	return created, nil
 }
 
@@ -165,6 +175,11 @@ func (s *WorkService) TransitionTask(ctx context.Context, actor domain.Agent, ta
 		return domain.Task{}, err
 	}
 	if to == "in_progress" {
+		if TaskHighRisk(task) {
+			if err := s.ensureG2Approved(ctx, actor, &task); err != nil {
+				return domain.Task{}, err
+			}
+		}
 		blockers, err := s.dependencyBlockers(ctx, task.ID)
 		if err != nil {
 			return domain.Task{}, err
@@ -177,10 +192,10 @@ func (s *WorkService) TransitionTask(ctx context.Context, actor domain.Agent, ta
 			return domain.Task{}, domain.NewError(domain.CodeConflict, fmt.Sprintf("WIP 超限：%s 已有 %d 个进行中任务", task.OwnerID, len(active)), 409)
 		}
 	}
-	if to == "done" && TaskHighRisk(task) {
-		g3, err := s.approvalFromTaskFlags(ctx, task)
+	if to == "done" {
+		g3, err := s.gateFromTaskFlags(ctx, task, "g3_approval_id")
 		if err != nil || g3 == nil || g3.Status != domain.ApprovalApproved {
-			return domain.Task{}, NewForbidden("高风险任务缺少已通过的 G3 验收", "请先提交 G3 并由人类批准后再标记 done。")
+			return domain.Task{}, NewForbidden("缺少已通过的 G3 验收（所有功能/里程碑/高风险任务必须 G3；小任务可由部门主管授权验收，但仍需 G3 核对表与审批记录）", "请先提交 G3 验收核对表与证据，并由人类/授权主管批准后再标记 done。")
 		}
 	}
 	from := task.Status
@@ -442,11 +457,15 @@ func (s *WorkService) DecideG3(ctx context.Context, approvalID, decision, decide
 }
 
 func (s *WorkService) approvalFromTaskFlags(ctx context.Context, task domain.Task) (*domain.Approval, error) {
+	return s.gateFromTaskFlags(ctx, task, "g3_approval_id")
+}
+
+func (s *WorkService) gateFromTaskFlags(ctx context.Context, task domain.Task, flagKey string) (*domain.Approval, error) {
 	var flags map[string]any
 	if err := json.Unmarshal([]byte(task.Flags), &flags); err != nil {
 		return nil, err
 	}
-	id, _ := flags["g3_approval_id"].(string)
+	id, _ := flags[flagKey].(string)
 	if id == "" {
 		return nil, nil
 	}
@@ -455,6 +474,79 @@ func (s *WorkService) approvalFromTaskFlags(ctx context.Context, task domain.Tas
 		return nil, err
 	}
 	return &appr, nil
+}
+
+// createGateApproval 创建 G2/G3 审批，payload 带任务与风险信息。
+func (s *WorkService) createGateApproval(ctx context.Context, actor domain.Agent, task domain.Task, kind, title string) (domain.Approval, error) {
+	payload, _ := json.Marshal(map[string]any{
+		"task_id": task.ID, "title": task.Title, "department_id": task.DepartmentID,
+		"priority": task.Priority, "kind": kind, "risk": "high",
+	})
+	return s.store.CreateApproval(ctx, domain.Approval{
+		ID: domain.NewID("appr"), Kind: kind, Title: title, Payload: string(payload),
+		Risk: "high", Status: domain.ApprovalPending, RequestedBy: actor.ID,
+		Scope: "once", CreatedAt: s.nowString(),
+	})
+}
+
+// ensureG2Approved 校验高风险任务是否已有批准的 G2；缺失则创建并返回 403 升级路径。
+func (s *WorkService) ensureG2Approved(ctx context.Context, actor domain.Agent, task *domain.Task) error {
+	appr, err := s.gateFromTaskFlags(ctx, *task, "g2_approval_id")
+	if err == nil && appr != nil {
+		switch appr.Status {
+		case domain.ApprovalApproved:
+			return nil
+		case domain.ApprovalRejected, domain.ApprovalExpired:
+			return NewForbidden("G2 已被拒绝/过期，不能开工", "请与人类确认范围/方案后重新发起 G2。")
+		default:
+			return NewForbidden("高风险任务等待 G2 批准（"+appr.ID+"）", "请由人类/授权审批人批准 G2 后再进入 in_progress。")
+		}
+	}
+	created, cerr := s.createGateApproval(ctx, actor, *task, domain.ApprovalG2, "G2 技术方案/范围："+task.Title)
+	if cerr != nil {
+		return fmt.Errorf("core: 创建 G2 审批失败: %w", cerr)
+	}
+	task.Flags = mergeFlag(task.Flags, "g2_approval_id", created.ID)
+	_ = s.store.UpdateTask(ctx, *task)
+	s.emit(ctx, "approval.updated", "approval", created.ID, "agent", actor.ID, map[string]any{"kind": domain.ApprovalG2, "task_id": task.ID, "status": created.Status})
+	s.audit(ctx, "agent", actor.ID, "approval.request", "approval", created.ID, "ok", map[string]any{"kind": domain.ApprovalG2, "task_id": task.ID})
+	return NewForbidden("高风险任务缺少已批准的 G2（已创建 "+created.ID+"）", "G2 审批已创建，请人类/授权审批人批准后重试开工。")
+}
+
+// DecideGate 记录 G2/G3 的决定（审批人可为人类或授权主管，均留审计）。
+func (s *WorkService) DecideGate(ctx context.Context, approvalID, decision, decidedBy, reason string) (domain.Approval, error) {
+	appr, err := s.store.GetApproval(ctx, approvalID)
+	if err != nil {
+		return domain.Approval{}, err
+	}
+	if appr.Kind != domain.ApprovalG2 && appr.Kind != domain.ApprovalG3 {
+		return domain.Approval{}, domain.NewError(domain.CodeInvalid, "不是 G2/G3 审批："+appr.Kind, 400)
+	}
+	if decision != domain.ApprovalApproved && decision != domain.ApprovalRejected {
+		return domain.Approval{}, domain.NewError(domain.CodeInvalid, "未知审批决定："+decision, 400)
+	}
+	appr, err = s.store.DecideApproval(ctx, approvalID, decision, decidedBy, reason)
+	if err != nil {
+		return domain.Approval{}, err
+	}
+	s.emit(ctx, "approval.updated", "approval", appr.ID, "user", decidedBy, map[string]any{"kind": appr.Kind, "status": appr.Status})
+	s.audit(ctx, "user", decidedBy, "approval.decide", "approval", appr.ID, "ok", map[string]any{"decision": decision, "reason": reason})
+	return appr, nil
+}
+
+// mergeFlag 在 task.Flags JSON 中写入一个字符串键。
+func mergeFlag(raw, key, value string) string {
+	flags := map[string]any{}
+	_ = json.Unmarshal([]byte(raw), &flags)
+	if flags == nil {
+		flags = map[string]any{}
+	}
+	flags[key] = value
+	merged, err := json.Marshal(flags)
+	if err != nil {
+		return raw
+	}
+	return string(merged)
 }
 
 func (s *WorkService) appendTaskEvent(ctx context.Context, ev domain.TaskEvent) domain.TaskEvent {

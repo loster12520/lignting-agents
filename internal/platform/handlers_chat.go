@@ -101,9 +101,9 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 		s.writeErr(w, errInvalid("会话标题过长（上限 100 字）"))
 		return
 	}
-	visibility := strings.TrimSpace(req.Visibility)
-	if visibility != "" && !visibilityValues[visibility] {
-		s.writeErr(w, errInvalid("不支持的可见性"))
+	visibility, err := normalizeConversationVisibility(req.Visibility)
+	if err != nil {
+		s.writeErr(w, err)
 		return
 	}
 	if req.ExpiresAt != "" {
@@ -195,9 +195,9 @@ func (s *Server) handlePatchConversation(w http.ResponseWriter, r *http.Request,
 		changed["topic"] = conv.Topic
 	}
 	if req.Visibility != nil {
-		v := strings.TrimSpace(*req.Visibility)
-		if !visibilityValues[v] {
-			s.writeErr(w, errInvalid("不支持的可见性"))
+		v, err := normalizeConversationVisibility(*req.Visibility)
+		if err != nil {
+			s.writeErr(w, err)
 			return
 		}
 		conv.Visibility = v
@@ -362,6 +362,14 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, owner
 	if conv.Status == "archived" {
 		s.writeErr(w, errConflict("会话已归档，不能发送消息"))
 		return
+	}
+	// 全局紧急停止：写库前预检，不落库/不索引（core Enqueue 也会拒绝，这里给用户可读反馈）。
+	if v, ok := s.settingValue("emergency_stop"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			s.writeErr(w, domain.NewError("emergency_stop", "全局紧急停止中，请恢复后再发消息", http.StatusServiceUnavailable))
+			return
+		}
 	}
 	var req postMessageRequest
 	if err := decodeJSON(w, r, &req); err != nil {

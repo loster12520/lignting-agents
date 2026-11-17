@@ -59,7 +59,7 @@ await import("../app.js");
 await wait(200);
 
 ok("外壳已挂载 .app", count(".app") === 1, "app children=" + app.childNodes.length);
-ok("侧栏 10 个导航项", count(".nav-item") === 10, String(count(".nav-item")));
+ok("侧栏 12 个导航项", count(".nav-item") === 12, String(count(".nav-item")));
 const convs = count(".conv-item");
 ok("会话列表渲染（>=8）", convs >= 8, String(convs));
 ok("默认进入助理私聊", (location.hash || "").indexOf("conv_dm_assistant") >= 0, location.hash);
@@ -97,6 +97,13 @@ ok("决策日志渲染卡片（无崩溃）", count(".mcard") >= 2 && textOf(doc
   "mcard=" + count(".mcard") + " text=" + textOf(document.querySelector(".msgs")).slice(0, 60));
 ok("决策日志为只读输入", document.querySelector(".composer-input").disabled === true);
 
+await goto("#/timeline");
+ok("变更时间线页渲染", textOf(document.querySelector(".page")).indexOf("时间线") >= 0, textOf(document.querySelector(".page")).slice(0, 40));
+
+await goto("#/discussions");
+ok("讨论/辩论/决策页 3 个 tab", count(".tab") === 3, String(count(".tab")));
+ok("讨论页空态（无部门群聊）", textOf(document.querySelector(".page")).indexOf("讨论") >= 0, textOf(document.querySelector(".page")).slice(0, 40));
+
 await goto("#/org");
 ok("组织图渲染节点", count(".org-node") >= 3, String(count(".org-node")));
 
@@ -108,7 +115,7 @@ ok("审批页 3 个标签", count(".tab") === 3, String(count(".tab")));
 ok("审批卡片渲染", count(".card") >= 3, String(count(".card")));
 
 await goto("#/memory");
-ok("记忆表渲染", count("tbody tr") >= 4, String(count("tbody tr")));
+ok("记忆页渲染", count(".card") >= 4 && textOf(document.querySelector(".page")).indexOf("记忆检查器") >= 0, "cards=" + count(".card"));
 
 await goto("#/audit");
 ok("审计表渲染", count("tbody tr") >= 6, String(count("tbody tr")));

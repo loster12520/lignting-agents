@@ -426,12 +426,40 @@ func TestR4TaskDeliveryFlow(t *testing.T) {
 	a.expect(http.StatusConflict, http.MethodPost, "/api/tasks/"+taskID+"/transition",
 		map[string]any{"actor_agent_id": str(sup, "id"), "to": "done", "reason": "跳步"}, nil)
 
-	// 合法推进（owner 执行）
-	for _, to := range []string{"ready", "discussing", "in_progress", "in_review"} {
+	// 高风险任务 G2 门禁：G2 批准前 in_progress 必须 403（task-42 修复项）
+	for _, to := range []string{"ready", "discussing"} {
 		out := a.ok(http.MethodPost, "/api/tasks/"+taskID+"/transition",
 			map[string]any{"actor_agent_id": str(owner, "id"), "to": to, "reason": "推进"}, nil)
 		if str(out, "status") != to {
 			t.Fatalf("任务状态 = %q, want %q", str(out, "status"), to)
+		}
+	}
+	a.expect(http.StatusForbidden, http.MethodPost, "/api/tasks/"+taskID+"/transition",
+		map[string]any{"actor_agent_id": str(owner, "id"), "to": "in_progress", "reason": "未批准 G2 就开工"}, nil)
+
+	// 找到本任务的 G2 pending 审批并由人类批准
+	g2s := a.ok(http.MethodGet, "/api/approvals?kind=G2&status=pending", nil, nil)
+	g2ID := ""
+	for _, raw := range items(g2s) {
+		appr := raw.(map[string]any)
+		if strings.Contains(str(appr, "payload"), taskID) {
+			g2ID = str(appr, "id")
+		}
+	}
+	if g2ID == "" {
+		t.Fatalf("高风险任务缺少 pending G2 审批（g2s=%v）", g2s)
+	}
+	g2 := a.ok(http.MethodPost, "/api/approvals/"+g2ID+"/decide",
+		map[string]any{"decision": "approved", "reason": "G2 技术方案批准"}, nil)
+	if str(g2, "status") != "approved" {
+		t.Fatalf("G2 决定后状态 = %q", str(g2, "status"))
+	}
+	// G2 批准后放行 in_progress，再提交评审
+	for _, to := range []string{"in_progress", "in_review"} {
+		out := a.ok(http.MethodPost, "/api/tasks/"+taskID+"/transition",
+			map[string]any{"actor_agent_id": str(owner, "id"), "to": to, "reason": "推进"}, nil)
+		if str(out, "status") != to {
+			t.Fatalf("G2 后任务状态 = %q, want %q", str(out, "status"), to)
 		}
 	}
 
@@ -555,11 +583,16 @@ func TestR4TaskDeliveryFlow(t *testing.T) {
 		t.Fatalf("产出物版本数 = %d, want 2", len(items(vers)))
 	}
 
-	// ---- 发布门证据（不 fail，记录缺陷）----
-	// D-R3R4-2a：高风险任务已进入 in_progress，但没有任何 G2 审批记录（FR-APPR-01/AC-03）。
-	g2s := a.ok(http.MethodGet, "/api/approvals?kind=G2", nil, nil)
-	if len(items(g2s)) == 0 {
-		t.Logf("DEFECT D-R3R4-2: high_risk 任务未经 G2 即进入 in_progress，G2 审批数=0（G2 门禁未实现）")
+	// G2 回归：本任务对应的 G2 必须是 approved（task-42）
+	g2Approved := a.ok(http.MethodGet, "/api/approvals?kind=G2&status=approved", nil, nil)
+	foundG2 := false
+	for _, raw := range items(g2Approved) {
+		if strings.Contains(str(raw.(map[string]any), "payload"), taskID) {
+			foundG2 = true
+		}
+	}
+	if !foundG2 {
+		t.Fatalf("G2 回归失败：找不到本任务的 approved G2")
 	}
 	// D-R3R4-2b：非高风险任务 done 未要求 G3（FR-APPR-01「G3 未批准不能标记 done」/AC-12）。
 	lowCreate := map[string]any{
@@ -589,9 +622,24 @@ func TestR4TaskDeliveryFlow(t *testing.T) {
 	}, nil)
 	a.ok(http.MethodPost, "/api/tasks/"+lowID+"/transition",
 		map[string]any{"actor_agent_id": str(reviewer, "id"), "to": "approved", "reason": "评审通过"}, nil)
-	if s2, o2 := a.call(http.MethodPost, "/api/tasks/"+lowID+"/transition",
-		map[string]any{"actor_agent_id": str(approver, "id"), "to": "done", "reason": "关闭"}, nil); s2 == http.StatusOK {
-		t.Logf("DEFECT D-R3R4-2: 非高风险任务未经 G3 直接 done 成功（G3 门禁只对 high_risk 生效） body=%v", o2)
+	// 普通任务 done 也必须先过 G3（task-42 修复项：缺 G3 → 403）
+	a.expect(http.StatusForbidden, http.MethodPost, "/api/tasks/"+lowID+"/transition",
+		map[string]any{"actor_agent_id": str(approver, "id"), "to": "done", "reason": "缺 G3 关闭"}, nil)
+	lowCrit := lowView["criteria"].([]any)[0].(map[string]any)
+	lowCritID := str(lowCrit, "id")
+	a.ok(http.MethodPost, "/api/tasks/"+lowID+"/criteria/"+lowCritID+"/evidence",
+		map[string]any{"actor_agent_id": str(owner, "id"), "evidence": "校对截图与拼写检查输出"}, nil)
+	a.ok(http.MethodPost, "/api/tasks/"+lowID+"/criteria/"+lowCritID+"/verdict",
+		map[string]any{"actor_agent_id": str(sup, "id"), "verdict": "approved"}, nil)
+	lowG3 := a.ok(http.MethodPost, "/api/tasks/"+lowID+"/g3",
+		map[string]any{"actor_agent_id": str(sup, "id"), "risk": "low"}, nil)
+	lowApprID := str(lowG3["approval"].(map[string]any), "id")
+	a.ok(http.MethodPost, "/api/approvals/"+lowApprID+"/decide",
+		map[string]any{"decision": "approved", "reason": "核对表完整"}, nil)
+	lowDone := a.ok(http.MethodPost, "/api/tasks/"+lowID+"/transition",
+		map[string]any{"actor_agent_id": str(approver, "id"), "to": "done", "reason": "关闭"}, nil)
+	if str(lowDone, "status") != "done" {
+		t.Fatalf("普通任务 G3 后 done = %q", str(lowDone, "status"))
 	}
 }
 

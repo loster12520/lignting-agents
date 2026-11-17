@@ -22,6 +22,7 @@ import (
 
 	"github.com/lignting/lignting-agents/internal/config"
 	"github.com/lignting/lignting-agents/internal/core"
+	"github.com/lignting/lignting-agents/internal/deepseek"
 	"github.com/lignting/lignting-agents/internal/memory"
 	"github.com/lignting/lignting-agents/internal/platform"
 	"github.com/lignting/lignting-agents/internal/store"
@@ -45,6 +46,7 @@ type Harness struct {
 	Faults       fixtures.Faults
 	Mock         bool
 	CoreServices bool
+	Runtime      *core.Runtime
 	stopSrv      func()
 }
 
@@ -75,9 +77,11 @@ func WithSeed() HarnessOption {
 	return func(c *harnessConfig) { c.seed = true }
 }
 
-// WithCoreServices injects R3 OrgService and R4 WorkService into the platform
-// server (mirrors cmd/lignting wiring). Runtime is nil: organization lifecycle
-// only, no live Agent turn interruption.
+// WithCoreServices injects R3 OrgService, R4 WorkService and a mock-backed
+// core Runtime into the platform server (mirrors cmd/lignting wiring). The
+// runtime lets /api/agents/{id}/stop return the domain-level 409 "no running
+// turn" instead of a transport error; tests that need a live turn can enqueue
+// one through h.Runtime.
 func WithCoreServices() HarnessOption {
 	return func(c *harnessConfig) { c.coreServices = true }
 }
@@ -150,7 +154,12 @@ func (h *Harness) Start() {
 	srv := platform.New(h.Cfg, h.Store)
 	h.Platform = srv
 	if h.CoreServices {
-		srv.SetOrgService(core.NewOrgService(h.Store, nil))
+		rt, rerr := core.NewRuntime(core.Options{Store: h.Store, Provider: deepseek.NewMock()})
+		if rerr != nil {
+			h.T.Fatalf("core runtime: %v", rerr)
+		}
+		h.Runtime = rt
+		srv.SetOrgService(core.NewOrgService(h.Store, rt))
 		srv.SetWorkService(core.NewWorkService(h.Store))
 		srv.SetDebateService(core.NewDebateService(h.Store))
 		memSvc, err := memory.NewService(memory.Options{
@@ -188,6 +197,10 @@ func (h *Harness) Start() {
 
 // Stop shuts down the server and closes the store. Safe to call more than once.
 func (h *Harness) Stop() {
+	if h.Runtime != nil {
+		h.Runtime.Close()
+		h.Runtime = nil
+	}
 	if h.Platform != nil {
 		h.Platform.Close()
 		h.Platform = nil

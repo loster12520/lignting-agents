@@ -5,6 +5,7 @@ package ac
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/lignting/lignting-agents/internal/store"
@@ -170,16 +171,14 @@ func TestAC14GroupChatAndAgentLifecycle(t *testing.T) {
 	if resumed.Status != "idle" {
 		t.Fatalf("agent resume status = %q", resumed.Status)
 	}
-	// Stop requires a live Runtime; acceptance harness injects OrgService with a
-	// nil Runtime, so the call must fail explicitly rather than report success.
-	stop, err := h.Client.PostJSON("/api/agents/"+fixtures.AgentDevLeadID+"/stop", map[string]any{"reason": "AC-14"})
-	if err != nil {
-		t.Fatalf("stop without runtime: %v", err)
+	// The harness wires a mock-backed core Runtime, so stopping an idle Agent
+	// is a domain-level conflict (no running turn), not a transport error.
+	// Stopping an actually-running turn is covered by the core runtime tests;
+	// the acceptance layer only proves the platform path + error contract.
+	stop := h.ExpectStatus(t, "POST", "/api/agents/"+fixtures.AgentDevLeadID+"/stop", map[string]any{"reason": "AC-14"}, 409)
+	if body := string(stop.Body); !strings.Contains(body, "没有运行中的 turn") {
+		t.Fatalf("idle stop body = %s, want no-running-turn conflict", body)
 	}
-	if stop.Status == 200 {
-		t.Fatal("stop without runtime reported success")
-	}
-	t.Logf("AC-14 stop without runtime returned %d (expected limitation; needs e2e runtime)", stop.Status)
 
 	// 7) Audit: conversation create/update/join/leave + agent lifecycle.
 	audits, err := h.Store.QueryAudit(context.Background(), store.AuditFilter{Limit: 300})
@@ -200,7 +199,7 @@ func TestAC14GroupChatAndAgentLifecycle(t *testing.T) {
 	}
 
 	t.Log("AC-14 R3 passed: project/temp group, members/patch, messages searchable, observer join/leave, agent pause/resume, audit")
-	t.Run("mention_queue_dm_isolation_bridge_stop", func(t *testing.T) {
-		SkipSkeleton(t, "AC-14 @-reply queue / cross-dept DM rejection / expiring bridge / Agent stop", "R6/R8", "需要 core 路由与 bridge API（R6）")
+	t.Run("mention_queue_dm_isolation_bridge_live_stop", func(t *testing.T) {
+		SkipSkeleton(t, "AC-14 @-reply queue / cross-dept DM rejection / expiring bridge / live-turn stop", "R6/R8", "需要 core 路由与 bridge API（R6）；运行中 turn 的停止由 core runtime 测试覆盖")
 	})
 }

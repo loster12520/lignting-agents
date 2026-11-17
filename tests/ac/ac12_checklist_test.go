@@ -57,11 +57,54 @@ func TestAC12SupervisorChecklistAndSampling(t *testing.T) {
 	}
 	criteria := created.Criteria
 
-	// proposed -> ready -> discussing -> in_progress (assistant acts for the user).
-	for _, to := range []string{"ready", "discussing", "in_progress"} {
+	// proposed -> ready -> discussing are allowed before the gate, but a
+	// high-risk task must not enter in_progress until its G2 is approved
+	// (FR-APPR-01, task-42). The 403 also proves the pending G2 exists.
+	for _, to := range []string{"ready", "discussing"} {
 		var ignored map[string]any
 		h.PostData(t, "/api/tasks/"+taskID+"/transition", map[string]any{"to": to, "reason": "验收推进"}, &ignored)
 	}
+	g2Gate := h.ExpectStatus(t, "POST", "/api/tasks/"+taskID+"/transition", map[string]any{
+		"to": "in_progress", "reason": "未批准 G2 开工",
+	}, 403)
+	if body := string(g2Gate.Body); !strings.Contains(body, "G2") {
+		t.Fatalf("G2 gate body = %s, want pending G2 reference", body)
+	}
+
+	// Approve the auto-created G2 as the human owner, then re-enter in_progress.
+	var approvals struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Kind    string `json:"kind"`
+			Status  string `json:"status"`
+			Payload string `json:"payload"`
+		} `json:"items"`
+	}
+	h.GetData(t, "/api/approvals?kind=G2&status=pending", &approvals)
+	var g2ID string
+	for _, a := range approvals.Items {
+		var payload struct {
+			TaskID string `json:"task_id"`
+		}
+		if jsonUnmarshal([]byte(a.Payload), &payload) == nil && payload.TaskID == taskID {
+			g2ID = a.ID
+			break
+		}
+	}
+	if g2ID == "" {
+		t.Fatalf("pending G2 for %s not found: %+v", taskID, approvals.Items)
+	}
+	var g2Decided struct {
+		Status string `json:"status"`
+	}
+	h.PostData(t, "/api/approvals/"+g2ID+"/decide", map[string]any{
+		"decision": "approved", "reason": "技术方案/范围已确认",
+	}, &g2Decided)
+	if g2Decided.Status != "approved" {
+		t.Fatalf("G2 decide status = %q, want approved", g2Decided.Status)
+	}
+	var started map[string]any
+	h.PostData(t, "/api/tasks/"+taskID+"/transition", map[string]any{"to": "in_progress", "reason": "G2 已批准"}, &started)
 
 	// Supervisor checklist: crit1 evidence + approved; crit2 missing; crit3
 	// initially human_needed.
