@@ -267,94 +267,99 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 	// The 1h disconnect rehearsal is documented as a P1 manual gate in ac-matrix.
 	t.Run("real_process_kill_and_model_timeout_R2_R8", func(t *testing.T) {
 		ctx := context.Background()
-		var convs struct {
-			Items []struct {
-				ID string `json:"id"`
-			} `json:"items"`
-		}
-		h.GetData(t, "/api/conversations?type=dm", &convs)
-		if len(convs.Items) != 1 {
-			t.Fatalf("DM conversations = %d, want 1", len(convs.Items))
-		}
-		dmID := convs.Items[0].ID
-		lastSeq := func() int64 {
-			events, err := h.Store.ListEventsSince(ctx, 0, "", 3000)
-			if err != nil {
-				t.Fatalf("events: %v", err)
+		t.Run("model_timeout_degrades", func(t *testing.T) {
+			// 用 scripted mock 确定性注入一次超时：真实 Key 模式下无法可靠制造真实超时，
+			// 而这里验证的是「模型失败时的降级 + 不重复计费 + 失败后仍可用」，与 Provider 类型无关。
+			mock := deepseek.NewMock()
+			mock.Script(deepseek.Script{Err: context.DeadlineExceeded})
+			ht := NewHarness(t, WithCoreServices(), WithProvider(mock))
+			ht.Setup("阿哲")
+			ctxT := context.Background()
+			var convsT struct {
+				Items []struct {
+					ID string `json:"id"`
+				} `json:"items"`
 			}
-			var max int64
-			for _, ev := range events {
-				if ev.Seq > max {
-					max = ev.Seq
-				}
+			ht.GetData(t, "/api/conversations?type=dm", &convsT)
+			if len(convsT.Items) != 1 {
+				t.Fatalf("DM conversations = %d, want 1", len(convsT.Items))
 			}
-			return max
-		}
-		waitEvent := func(typ string, since int64) domain.Event {
-			t.Helper()
-			var found domain.Event
-			WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
-				events, err := h.Store.ListEventsSince(ctx, since, dmID, 1000)
+			dmT := convsT.Items[0].ID
+			lastSeqT := func() int64 {
+				events, err := ht.Store.ListEventsSince(ctxT, 0, "", 3000)
 				if err != nil {
-					return err
+					t.Fatalf("events: %v", err)
 				}
+				var max int64
 				for _, ev := range events {
-					if ev.Type == typ {
-						found = ev
-						return nil
+					if ev.Seq > max {
+						max = ev.Seq
 					}
 				}
-				return fmt.Errorf("%s not seen", typ)
-			})
-			return found
-		}
-		runTurn := func(content string) domain.Message {
-			t.Helper()
-			var posted struct {
-				Message domain.Message `json:"message"`
+				return max
 			}
-			h.PostData(t, "/api/conversations/"+dmID+"/messages", map[string]any{"content": content}, &posted)
-			if err := h.Runtime.EnqueueUserMessage(ctx, posted.Message); err != nil {
-				t.Fatalf("enqueue: %v", err)
-			}
-			return posted.Message
-		}
-
-		t.Run("model_timeout_degrades", func(t *testing.T) {
 			usageRows := func() int {
 				var n int
-				if err := h.Store.DB.QueryRow("SELECT COUNT(*) FROM usage_ledger").Scan(&n); err != nil {
+				if err := ht.Store.DB.QueryRow("SELECT COUNT(*) FROM usage_ledger").Scan(&n); err != nil {
 					t.Fatalf("usage rows: %v", err)
 				}
 				return n
 			}
+			runTurnT := func(content string) {
+				t.Helper()
+				var posted struct {
+					Message domain.Message `json:"message"`
+				}
+				ht.PostData(t, "/api/conversations/"+dmT+"/messages", map[string]any{"content": content}, &posted)
+				if err := ht.Runtime.EnqueueUserMessage(ctxT, posted.Message); err != nil {
+					t.Fatalf("enqueue: %v", err)
+				}
+			}
+			waitEventT := func(typ string, since int64) domain.Event {
+				t.Helper()
+				var found domain.Event
+				WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+					events, err := ht.Store.ListEventsSince(ctxT, since, dmT, 1000)
+					if err != nil {
+						return err
+					}
+					for _, ev := range events {
+						if ev.Type == typ {
+							found = ev
+							return nil
+						}
+					}
+					return fmt.Errorf("%s not seen", typ)
+				})
+				return found
+			}
+
 			usageBefore := usageRows()
-			h.MockProvider.Script(deepseek.Script{Err: context.DeadlineExceeded})
-			before := lastSeq()
-			runTurn("AC-07 模型超时降级")
-			waitEvent("turn.failed", before)
-			var msgs struct {
+			before := lastSeqT()
+			runTurnT("AC-07 模型超时降级")
+			waitEventT("turn.failed", before)
+			var msgsT struct {
 				Items []struct {
 					SenderType string `json:"sender_type"`
 					Content    string `json:"content"`
 					Meta       string `json:"meta"`
 				} `json:"items"`
 			}
-			h.GetData(t, "/api/conversations/"+dmID+"/messages?limit=100", &msgs)
-			if len(msgs.Items) == 0 {
+			ht.GetData(t, "/api/conversations/"+dmT+"/messages?limit=100", &msgsT)
+			if len(msgsT.Items) == 0 {
 				t.Fatal("no messages after model timeout")
 			}
-			last := msgs.Items[len(msgs.Items)-1]
+			last := msgsT.Items[len(msgsT.Items)-1]
 			if last.SenderType != "agent" || !strings.Contains(last.Meta, "assistant.error") || !strings.Contains(last.Content, "模型调用失败") {
 				t.Fatalf("timeout degradation message = %+v", last)
 			}
 			if got := usageRows(); got != usageBefore {
 				t.Fatalf("failed turn wrote usage rows: %d -> %d", usageBefore, got)
 			}
-			// Runtime is still usable after the failure.
-			before = lastSeq()
-			runTurn("AC-07 超时后重试成功")
-			waitEvent("message.completed", before)
+			// Runtime is still usable after the failure（scripted 错误已消费，下一次回落到默认回复）。
+			before = lastSeqT()
+			runTurnT("AC-07 超时后重试成功")
+			waitEventT("message.completed", before)
 			t.Log("AC-07 model timeout degraded to a readable assistant message; retry succeeded")
 		})
 

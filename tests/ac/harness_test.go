@@ -63,6 +63,7 @@ type harnessConfig struct {
 	coreServices   bool
 	memoryDisabled bool
 	noKeyProvider  bool
+	provider       deepseek.Provider
 }
 
 // HarnessOption customizes NewHarness.
@@ -108,6 +109,13 @@ func WithNoKeyProvider() HarnessOption {
 	return func(c *harnessConfig) { c.noKeyProvider = true }
 }
 
+// WithProvider 用指定 Provider 覆盖默认接线（mock 模式 = deepseek.NewMock()，
+// deepseek 模式 = 真实客户端）。用于确定性地注入模型故障（如超时），
+// 避免真实 Key 模式下依赖真实网络故障才能复现。
+func WithProvider(p deepseek.Provider) HarnessOption {
+	return func(c *harnessConfig) { c.provider = p }
+}
+
 // NewHarness starts an isolated in-process acceptance environment.
 func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 	t.Helper()
@@ -149,8 +157,23 @@ func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 	}
 
 	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock, CoreServices: hc.coreServices, MemoryDisabled: hc.memoryDisabled}
+	if hc.provider != nil {
+		h.Provider = hc.provider
+	}
 	if hc.noKeyProvider {
 		h.Provider = deepseek.New(deepseek.Config{}) // empty API key -> ErrNoAPIKey
+	}
+	// AC_MODEL_MODE=deepseek 必须真的走 DeepSeek 客户端。
+	// 以前这里没接线，h.Provider 保持 nil，Start() 会静默回落到 mock，
+	// 于是「真实 Key 验收」跑的是 mock 却报绿（假通过）。
+	if hc.modelMode == config.ModelDeepSeek && h.Provider == nil {
+		key := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+		h.Provider = deepseek.New(deepseek.Config{APIKey: key, Model: cfg.Model, MaxRetries: 2})
+		keyState := "缺失→预期降级"
+		if key != "" {
+			keyState = "已配置"
+		}
+		t.Logf("AC_MODEL_MODE=deepseek 已接入真实 DeepSeek 客户端（model=%s, key=%s）", cfg.Model, keyState)
 	}
 	if hc.faults.Enabled() {
 		path, werr := fixtures.WriteFaults(cfg.DataDir, hc.faults)

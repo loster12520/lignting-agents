@@ -244,8 +244,12 @@ func TestAC01FirstRunAndAssistant(t *testing.T) {
 			t.Fatalf("DM messages after Q&A = %d/%d", after.Total, len(after.Items))
 		}
 		last := after.Items[len(after.Items)-1]
-		if last.SenderType != "agent" || last.SenderID != org.Assistant["id"] || !strings.Contains(last.Content, "（mock）") {
-			t.Fatalf("single-question reply = %+v, want mock assistant answer", last)
+		if last.SenderType != "agent" || last.SenderID != org.Assistant["id"] || strings.TrimSpace(last.Content) == "" {
+			t.Fatalf("single-question reply = %+v, want non-empty assistant answer", last)
+		}
+		// 只断言结构：真实模型模式下不校验措辞（见 docs/testing/ac-guide.md 断言原则）。
+		if h.Mock && !strings.Contains(last.Content, "（mock）") {
+			t.Fatalf("mock 模式回复缺（mock）标记 = %+v", last)
 		}
 		var tasks struct {
 			Total int64 `json:"total"`

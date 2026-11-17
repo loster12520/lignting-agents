@@ -24,7 +24,8 @@ go test -tags=acceptance ./tests/ac -v -run TestAC01
 
 - 不加 -tags=acceptance 时 tests/ac 只编译 doc.go，普通 go test ./... 不受影响。
 - AC_STRICT=1：把「骨架/端点未实现」的 skip 变 failure；发布前必须开。
-- AC_MODEL_MODE=deepseek|mock：选择模型模式；默认 mock。
+- AC_MODEL_MODE=deepseek|mock：选择模型模式；默认 mock。deepseek 模式会真的接真实 DeepSeek 客户端
+  （日志打印「已接入真实 DeepSeek 客户端」）；无 Key 时按约定降级为可读错误，不是悄悄回落到 mock。
 
 ## 2. 一个 AC 测试的标准结构
 

@@ -21,6 +21,7 @@
 
 - **检索写入 O(N²)**：`search_terms` 缺 `doc_id` 索引，写入路径每条消息都全表扫描；10 万条消息的 seed 从 >20 分钟（实际外推约 80 分钟）降到 24s，索引重建 27s。schema v3 迁移 `003_search_terms_doc_index.sql` 补索引。
 - **检索基准假通过**：基准库未注入生产 indexer（「写入后立即可搜」没走生产路径）、过滤会话用例选中了数学上不含目标词的会话（0 条也很快）；两处均已修正，并加「至少命中 1 条」断言。
+- **AC 真实模型模式假通过**：`AC_MODEL_MODE=deepseek` 时 harness 没有接线真实客户端（Provider 为 nil 会回落 mock），「真实 Key 验收」实际跑的是 mock。现已接入真实 DeepSeek 客户端；AC-01 改为只断言结构（mock 模式才校验 mock 标记）、AC-07 模型超时改用 scripted provider 确定性注入。2026-11-18 真实 Key 复跑 AC-01/03/07 PASS。
 - **断线补齐演练**：新增 `tests/verify/e2e/offline_drill_test.go`，断线期间灌 3600 条事件（≈1h@1/s），重连 `since` 补齐断言 id 连续、不重不漏。
 
 ### 测试与验收

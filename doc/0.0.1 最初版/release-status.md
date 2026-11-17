@@ -42,13 +42,15 @@ R1–R8 按 [implementation-plan.md](implementation-plan.md) 的 R 表全部完�
 
 ## 2. 未完成（下次继续的入口）
 
-只剩两项，都依赖外部条件/人工，非代码缺陷：
+只剩一项人工演练，非代码缺陷：
 
-1. **真实 Key 模式验收**：在有 `DEEPSEEK_API_KEY` 的环境按 `AC_MODEL_MODE=deepseek` 复跑 AC-01/03/07 并记录证据。
-   - 本机 shell 无该环境变量；`~/.dsh/.credentials.yaml` 里有 Key，但真实模型跑 AC 会产生 API 费用，
-     需 owner 同意后执行。
-2. **真实浏览器断网 1 小时人工演练**：自动化等价演练已通过（见上表），人工项仍需发布前做一次，
+1. **真实浏览器断网 1 小时人工演练**：自动化等价演练已通过（见上表），人工项仍需发布前做一次，
    步骤见 [docs/testing/ac-guide.md](../../docs/testing/ac-guide.md) 第 7 节。
+
+真实 Key 验收（2026-11-18 补做并已通过）：`AC_MODEL_MODE=deepseek` + `DEEPSEEK_API_KEY`（owner 提供，
+仅环境变量注入）复跑 AC-01/03/07 → PASS 8.9s。过程中发现 AC harness 的假通过：deepseek 模式下
+Provider 没接线，`Start()` 静默回落 mock；已修复（真实模式接真实客户端、AC-01 只断言结构、AC-07 超时改用
+scripted provider），mock 模式 15 个 AC 仍全绿。
 
 ## 3. 如何继续
 

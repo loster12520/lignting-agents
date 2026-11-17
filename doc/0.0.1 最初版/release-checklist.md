@@ -21,8 +21,12 @@
 ## 验收
 
 - [x] AC-01..15 全部 PASS（记录命令、模式、耗时） — `go test -tags=acceptance ./tests/ac`，mock 模式，12.3s，0 Skip
-- [ ] 真实 Key 模式：AC-01/03/07 人工复跑 PASS — **未执行**：当前 shell 无 `DEEPSEEK_API_KEY`。
-  本机 `~/.dsh/.credentials.yaml` 里有 Key，但用真实模型跑 AC 会产生 API 费用，需 owner 明确同意后执行。
+- [x] 真实 Key 模式：AC-01/03/07 人工复跑 PASS — 2026-11-18，`AC_MODEL_MODE=deepseek` +
+  `DEEPSEEK_API_KEY`（owner 提供，仅环境变量注入，未落盘/未入库）：`go test -tags=acceptance ./tests/ac
+  -run 'TestAC01|TestAC03|TestAC07' -v` → PASS 8.9s（AC-01 2.78s 为真实网络调用、AC-03 0.04s、AC-07 6.06s）。
+  **同时发现并修复假通过**：此前 `AC_MODEL_MODE=deepseek` 并没有接线真实客户端（`Start()` 里 Provider 为 nil 时
+  一律回落 `deepseek.NewMock()`），所以「真实 Key 验收」跑的是 mock；已修 harness 并让 AC-01 不再断言 mock 措辞、
+  AC-07 超时用 scripted provider 确定性注入。
 - [x] 崩溃恢复：真实 SIGKILL + 重启；running turn → interrupted；消息 0 丢失；写事件 unknown 不自动重试 — AC-07 自动化（`tests/ac/ac07_recovery_test.go` 的 `real_process_kill_and_model_timeout_R2_R8`）
 - [x] 断线补齐自动化：SSE `since` 重放不重不漏 — AC-07 + 新增 `TestR9OfflineCatchUpDrill`：断线窗口灌 3600 条事件（≈1h@1/s），
   重连 16.9ms 补齐 3604 条，id 连续、0 重复、3600/3600 命中
