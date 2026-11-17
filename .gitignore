@@ -1,0 +1,24 @@
+# binaries
+/lignting
+/lignting.exe
+/dist/
+/bin/
+
+# runtime data
+/data/
+/.lignting-data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# secrets
+secrets.json
+.env
+.env.local
+
+# tooling
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
