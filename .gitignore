@@ -4,6 +4,7 @@
 /dist/
 /bin/
 /tests/bin/
+/tests/verify/bin/
 
 # runtime data
 /data/

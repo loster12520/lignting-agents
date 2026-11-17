@@ -77,7 +77,7 @@ func Seed(ctx context.Context, st *store.Store, total int) (SeedStats, error) {
 		}
 	}
 
-	const batch = 500
+	const batch = 1000
 	for start := 0; start < total; start += batch {
 		end := start + batch
 		if end > total {
@@ -124,13 +124,16 @@ func Seed(ctx context.Context, st *store.Store, total int) (SeedStats, error) {
 }
 
 // buildContent 生成混合中文/英文/代码内容，并注入金标准唯一 token。
+// 控制单条长度（~30–40 词）以保证 10 万条 seed/重建在分钟级完成。
 func buildContent(i, total int) string {
 	var b strings.Builder
 	b.WriteString(chineseNoise[i%len(chineseNoise)])
 	b.WriteString(" ")
 	b.WriteString(englishNoise[(i*7)%len(englishNoise)])
-	b.WriteString(" ")
-	b.WriteString(codeNoise[(i*11)%len(codeNoise)])
+	if i%3 == 0 {
+		b.WriteString(" ")
+		b.WriteString(codeNoise[(i*11)%len(codeNoise)])
+	}
 	b.WriteString(fmt.Sprintf(" 序号%d", i))
 	// 10% 含中文两字目标词；5% 含代码标识符；20% 含 login。
 	if i%10 == 0 {

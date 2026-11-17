@@ -348,12 +348,12 @@ Agent 回复中允许出现：
 | R1 | 已完成 | platform-dev + web-dev | 平台底座/前端骨架；Lead 已手工验证 setup/消息幂等/中文 2 字/删除不可搜/SSE delta/重启恢复 |
 | R2 | 已完成 | core-dev | DeepSeek 客户端 + Agent loop；mock 助理回复/SSE delta/turn/usage 已验证 |
 | R3 | 已完成 | core-dev + platform-dev | 意图→蓝图→G1→provisioning→org/lifecycle；Lead 已在 18794 真实 binary 跑通含 403 门禁/幂等/暂停 |
-| R4 | 进行中 | core-dev + platform-dev | 任务/产出/评审/G2-G3 |
-| R5 | 已完成 | tools-dev | 共享写工具/5 工具/Git 时间线；并发/35→30/commit 组测试绿 |
-| R6 | 待开始 | core-dev | |
-| R7 | 进行中 | memory-dev | 记忆模块完成（52 测试/75%）；store Repo 已有，待 core/HTTP 联调 |
-| R8 | 待开始 | platform-dev | |
-| R9 | 进行中 | qa-dev | AC 夹具/文档骨架先行 |
+| R4 | 已完成 | core-dev + platform-dev | 任务/产出物/评审/G2-G3、附件 schema v2、变更时间线；G2/G3 门禁与人类抽检落地，AC-03/12/15 通过 |
+| R5 | 已完成 | tools-dev | 共享写工具/5 工具/Git 时间线；并发/35→30/commit 组测试绿；AC-15 通过 |
+| R6 | 已完成 | core-dev + platform-dev | 部门内讨论/跨部门辩论/决策/升级；AC-04 通过 |
+| R7 | 已完成 | memory-dev + platform-dev | 四层记忆/注入快照/检查器/上下文查询；AC-05/11 通过 |
+| R8 | 已完成 | platform-dev + reviewer-final | 安全/预算/备份/导出/导入/恢复/Agent Token/临时桥/紧急停止/定时/抽检；AC-08/09/10/12/13 通过 |
+| R9 | 进行中 | lead + qa-dev | 15 AC 收口（mock 模式 14/15 主用例已绿）、10 万检索基准、发布文档；真实 Key 验收与 1h 断线演练待人工执行 |
 
 ---
 

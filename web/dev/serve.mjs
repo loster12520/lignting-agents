@@ -8,7 +8,8 @@ import { extname, join, normalize } from "node:path";
 const listenPort = Number(process.argv[2] || 18797);
 const apiBase = new URL(process.argv[3] || "http://127.0.0.1:18796");
 const ROOT = new URL("../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const WEB = join(ROOT, "web");
+// ../ 已指向 web/ 本身；再 join("web") 会变成 web/web，导致 /assets/* 404。
+const WEB = ROOT.replace(/[\\/]+$/, "");
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 

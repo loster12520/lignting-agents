@@ -115,6 +115,9 @@ func TestAC13AttentionInboxApprovals(t *testing.T) {
 		t.Fatalf("duplicate notifications: total=%d, want 4", inboxAgain.Total)
 	}
 
+	// R8 extras run before the password/rate-limit section logs the owner out.
+	t.Run("batch_later_delegate_dual_key", func(t *testing.T) { runAC13Extras(t, h) })
+
 	// 6) Local password + login failure rate limit (5 x 401 then 429).
 	var setPW struct {
 		HasPassword bool `json:"has_password"`
@@ -174,161 +177,166 @@ func TestAC13AttentionInboxApprovals(t *testing.T) {
 
 	t.Log("AC-13 R3/R8 passed: TTL expired without execution, interrupt budget 3+1, inbox status, login rate limit")
 
-	t.Run("batch_later_delegate_dual_key", func(t *testing.T) {
-		ctx := context.Background()
-		createApproval := func(kind, risk, scope string) domain.Approval {
-			t.Helper()
-			a, err := h.Store.CreateApproval(ctx, domain.Approval{
-				Kind: kind, Title: "AC-13 批量/稍后/授权", Risk: risk, Scope: scope, RequestedBy: "agent_x",
-			})
-			if err != nil {
-				t.Fatalf("create approval: %v", err)
-			}
-			return a
-		}
+}
 
-		// Batch approvals: only low/medium risk once/session can be batched.
-		a1 := createApproval(domain.ApprovalG2, "low", "once")
-		a2 := createApproval(domain.ApprovalG2, "medium", "session")
-		var batch struct {
-			Count int `json:"count"`
-		}
-		h.PostData(t, "/api/approvals/batch", map[string]any{
-			"ids": []string{a1.ID, a2.ID}, "decision": "approved", "reason": "低风险批量",
-		}, &batch)
-		if batch.Count != 2 {
-			t.Fatalf("batch count = %d, want 2", batch.Count)
-		}
-		for _, id := range []string{a1.ID, a2.ID} {
-			got, err := h.Store.GetApproval(ctx, id)
-			if err != nil || got.Status != domain.ApprovalApproved {
-				t.Fatalf("batched approval %s = %+v err=%v", id, got, err)
-			}
-		}
-		a3 := createApproval(domain.ApprovalIrreversible, "high", "once")
-		a4 := createApproval(domain.ApprovalG2, "low", "once")
-		h.ExpectStatus(t, "POST", "/api/approvals/batch", map[string]any{
-			"ids": []string{a4.ID, a3.ID}, "decision": "approved",
-		}, 403)
-		if got, _ := h.Store.GetApproval(ctx, a4.ID); got.Status != domain.ApprovalPending {
-			t.Fatalf("batch partially executed: %s", got.Status)
-		}
-		h.ExpectStatus(t, "POST", "/api/approvals/batch", map[string]any{
-			"ids": []string{a1.ID}, "decision": "approved",
-		}, 409)
+// runAC13Extras covers batch approvals, snooze restore, delegated/unauthorized
+// decisions and dual-key confirmation. It must run while the owner session is
+// still authenticated (main test logs out for the login rate-limit checks).
+func runAC13Extras(t *testing.T, h *Harness) {
 
-		// Snooze approval -> scheduler restores it and records audit.
-		a5 := createApproval(domain.ApprovalG2, "low", "once")
-		until := time.Now().Add(time.Second).UTC().Format(time.RFC3339)
-		var snoozed struct {
-			SnoozedUntil string `json:"snoozed_until"`
-		}
-		h.PostData(t, "/api/approvals/"+a5.ID+"/snooze", map[string]any{"until": until}, &snoozed)
-		if snoozed.SnoozedUntil == "" {
-			t.Fatalf("snooze approval = %+v", snoozed)
-		}
-		if _, ok, _ := h.Store.Setting(ctx, "snooze.approval."+a5.ID); !ok {
-			t.Fatal("snooze approval setting missing")
-		}
-		time.Sleep(1200 * time.Millisecond)
-		if _, err := h.Platform.RunSchedulesOnce(ctx); err != nil {
-			t.Fatalf("run schedules: %v", err)
-		}
-		if _, ok, _ := h.Store.Setting(ctx, "snooze.approval."+a5.ID); ok {
-			t.Fatal("snooze approval setting not cleared")
-		}
-		if list, _ := h.Store.QueryAudit(ctx, store.AuditFilter{Action: "snooze.restore"}); len(list) == 0 {
-			t.Fatal("snooze.restore audit missing")
-		}
-
-		// Snooze notification -> due restores unread.
-		n, _, err := h.Store.CreateNotification(ctx, store.Notification{Level: "fyi", Title: "AC-13 稍后通知", ObjectType: "test", ObjectID: "n_ac13_snooze"})
+	ctx := context.Background()
+	createApproval := func(kind, risk, scope string) domain.Approval {
+		t.Helper()
+		a, err := h.Store.CreateApproval(ctx, domain.Approval{
+			Kind: kind, Title: "AC-13 批量/稍后/授权", Risk: risk, Scope: scope, RequestedBy: "agent_x",
+		})
 		if err != nil {
-			t.Fatalf("create notification: %v", err)
+			t.Fatalf("create approval: %v", err)
 		}
-		until2 := time.Now().Add(time.Second).UTC().Format(time.RFC3339)
-		var nSnoozed struct {
-			Status string `json:"status"`
-		}
-		h.PostData(t, "/api/notifications/"+n.ID+"/snooze", map[string]any{"until": until2}, &nSnoozed)
-		if nSnoozed.Status != "snoozed" {
-			t.Fatalf("snooze notification = %+v", nSnoozed)
-		}
-		time.Sleep(1200 * time.Millisecond)
-		if _, err := h.Platform.RunSchedulesOnce(ctx); err != nil {
-			t.Fatalf("run schedules 2: %v", err)
-		}
-		gotN, err := h.Store.GetNotification(ctx, n.ID)
-		if err != nil || gotN.Status != "unread" {
-			t.Fatalf("notification after snooze = %+v err=%v", gotN, err)
-		}
+		return a
+	}
 
-		// Delegated assistant can decide once; un-delegated / anonymous cannot.
-		var org struct {
-			Assistant map[string]any `json:"assistant"`
+	// Batch approvals: only low/medium risk once/session can be batched.
+	a1 := createApproval(domain.ApprovalG2, "low", "once")
+	a2 := createApproval(domain.ApprovalG2, "medium", "session")
+	var batch struct {
+		Count int `json:"count"`
+	}
+	h.PostData(t, "/api/approvals/batch", map[string]any{
+		"ids": []string{a1.ID, a2.ID}, "decision": "approved", "reason": "低风险批量",
+	}, &batch)
+	if batch.Count != 2 {
+		t.Fatalf("batch count = %d, want 2", batch.Count)
+	}
+	for _, id := range []string{a1.ID, a2.ID} {
+		got, err := h.Store.GetApproval(ctx, id)
+		if err != nil || got.Status != domain.ApprovalApproved {
+			t.Fatalf("batched approval %s = %+v err=%v", id, got, err)
 		}
-		h.GetData(t, "/api/org", &org)
-		assistantID, _ := org.Assistant["id"].(string)
-		if assistantID == "" {
-			t.Fatal("assistant id missing")
-		}
-		var tokenOut struct {
-			Token string `json:"token"`
-		}
-		h.PostData(t, "/api/agents/"+assistantID+"/token", map[string]any{}, &tokenOut)
-		a6 := createApproval(domain.ApprovalG2, "low", "once")
-		h.PostData(t, "/api/approvals/"+a6.ID+"/delegate", map[string]any{
-			"to_agent_id": assistantID, "scope": "once",
-			"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-		}, &map[string]any{})
-		status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a6.ID+"/decide", tokenOut.Token, `{"decision":"approved","reason":"代审"}`)
-		if status != 200 {
-			t.Fatalf("delegated decide = %d, want 200", status)
-		}
-		if got, _ := h.Store.GetApproval(ctx, a6.ID); got.DecidedBy != assistantID {
-			t.Fatalf("delegated decided_by = %q, want %q", got.DecidedBy, assistantID)
-		}
-		unauthorized, err := h.Store.CreateAgent(ctx, domain.Agent{Name: "未授权", Kind: domain.AgentKindAssistant})
-		if err != nil {
-			t.Fatalf("unauthorized agent: %v", err)
-		}
-		plain, hash, err := store.NewToken()
-		if err != nil {
-			t.Fatalf("new token: %v", err)
-		}
-		if err := h.Store.SetAgentTokenHash(ctx, unauthorized.ID, hash); err != nil {
-			t.Fatalf("set token: %v", err)
-		}
-		a7 := createApproval(domain.ApprovalG2, "low", "once")
-		if status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a7.ID+"/decide", plain, `{"decision":"approved"}`); status != 403 {
-			t.Fatalf("unauthorized agent decide = %d, want 403", status)
-		}
-		if status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a7.ID+"/decide", "", `{"decision":"approved"}`); status != 401 {
-			t.Fatalf("anonymous decide = %d, want 401", status)
-		}
+	}
+	a3 := createApproval(domain.ApprovalIrreversible, "high", "once")
+	a4 := createApproval(domain.ApprovalG2, "low", "once")
+	h.ExpectStatus(t, "POST", "/api/approvals/batch", map[string]any{
+		"ids": []string{a4.ID, a3.ID}, "decision": "approved",
+	}, 403)
+	if got, _ := h.Store.GetApproval(ctx, a4.ID); got.Status != domain.ApprovalPending {
+		t.Fatalf("batch partially executed: %s", got.Status)
+	}
+	h.ExpectStatus(t, "POST", "/api/approvals/batch", map[string]any{
+		"ids": []string{a1.ID}, "decision": "approved",
+	}, 409)
 
-		// Dual key: irreversible approval needs explicit second_confirm.
-		a8 := createApproval(domain.ApprovalIrreversible, "high", "once")
-		first, err := h.Client.PostJSON("/api/approvals/"+a8.ID+"/decide", map[string]any{"decision": "approved"})
-		if err != nil || first.Status != 409 {
-			t.Fatalf("dual key first = %v/%v, want 409", first, err)
+	// Snooze approval -> scheduler restores it and records audit.
+	a5 := createApproval(domain.ApprovalG2, "low", "once")
+	until := time.Now().Add(time.Second).UTC().Format(time.RFC3339)
+	var snoozed struct {
+		SnoozedUntil string `json:"snoozed_until"`
+	}
+	h.PostData(t, "/api/approvals/"+a5.ID+"/snooze", map[string]any{"until": until}, &snoozed)
+	if snoozed.SnoozedUntil == "" {
+		t.Fatalf("snooze approval = %+v", snoozed)
+	}
+	if _, ok, _ := h.Store.Setting(ctx, "snooze.approval."+a5.ID); !ok {
+		t.Fatal("snooze approval setting missing")
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if _, err := h.Platform.RunSchedulesOnce(ctx); err != nil {
+		t.Fatalf("run schedules: %v", err)
+	}
+	if _, ok, _ := h.Store.Setting(ctx, "snooze.approval."+a5.ID); ok {
+		t.Fatal("snooze approval setting not cleared")
+	}
+	if list, _ := h.Store.QueryAudit(ctx, store.AuditFilter{Action: "snooze.restore"}); len(list) == 0 {
+		t.Fatal("snooze.restore audit missing")
+	}
+
+	// Snooze notification -> due restores unread.
+	n, _, err := h.Store.CreateNotification(ctx, store.Notification{Level: "fyi", Title: "AC-13 稍后通知", ObjectType: "test", ObjectID: "n_ac13_snooze"})
+	if err != nil {
+		t.Fatalf("create notification: %v", err)
+	}
+	until2 := time.Now().Add(time.Second).UTC().Format(time.RFC3339)
+	var nSnoozed struct {
+		Status string `json:"status"`
+	}
+	h.PostData(t, "/api/notifications/"+n.ID+"/snooze", map[string]any{"until": until2}, &nSnoozed)
+	if nSnoozed.Status != "snoozed" {
+		t.Fatalf("snooze notification = %+v", nSnoozed)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if _, err := h.Platform.RunSchedulesOnce(ctx); err != nil {
+		t.Fatalf("run schedules 2: %v", err)
+	}
+	gotN, err := h.Store.GetNotification(ctx, n.ID)
+	if err != nil || gotN.Status != "unread" {
+		t.Fatalf("notification after snooze = %+v err=%v", gotN, err)
+	}
+
+	// Delegated assistant can decide once; un-delegated / anonymous cannot.
+	var org struct {
+		Assistant map[string]any `json:"assistant"`
+	}
+	h.GetData(t, "/api/org", &org)
+	assistantID, _ := org.Assistant["id"].(string)
+	if assistantID == "" {
+		t.Fatal("assistant id missing")
+	}
+	var tokenOut struct {
+		Token string `json:"token"`
+	}
+	h.PostData(t, "/api/agents/"+assistantID+"/token", map[string]any{}, &tokenOut)
+	a6 := createApproval(domain.ApprovalG2, "low", "once")
+	h.PostData(t, "/api/approvals/"+a6.ID+"/delegate", map[string]any{
+		"to_agent_id": assistantID, "scope": "once",
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}, &map[string]any{})
+	status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a6.ID+"/decide", tokenOut.Token, `{"decision":"approved","reason":"代审"}`)
+	if status != 200 {
+		t.Fatalf("delegated decide = %d, want 200", status)
+	}
+	if got, _ := h.Store.GetApproval(ctx, a6.ID); got.DecidedBy != assistantID {
+		t.Fatalf("delegated decided_by = %q, want %q", got.DecidedBy, assistantID)
+	}
+	unauthorized, err := h.Store.CreateAgent(ctx, domain.Agent{Name: "未授权", Kind: domain.AgentKindAssistant})
+	if err != nil {
+		t.Fatalf("unauthorized agent: %v", err)
+	}
+	plain, hash, err := store.NewToken()
+	if err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	if err := h.Store.SetAgentTokenHash(ctx, unauthorized.ID, hash); err != nil {
+		t.Fatalf("set token: %v", err)
+	}
+	a7 := createApproval(domain.ApprovalG2, "low", "once")
+	if status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a7.ID+"/decide", plain, `{"decision":"approved"}`); status != 403 {
+		t.Fatalf("unauthorized agent decide = %d, want 403", status)
+	}
+	if status := rawAgentPost(t, h.BaseURL+"/api/approvals/"+a7.ID+"/decide", "", `{"decision":"approved"}`); status != 401 {
+		t.Fatalf("anonymous decide = %d, want 401", status)
+	}
+
+	// Dual key: irreversible approval needs explicit second_confirm.
+	a8 := createApproval(domain.ApprovalIrreversible, "high", "once")
+	first, err := h.Client.PostJSON("/api/approvals/"+a8.ID+"/decide", map[string]any{"decision": "approved"})
+	if err != nil || first.Status != 409 {
+		t.Fatalf("dual key first = %v/%v, want 409", first, err)
+	}
+	if !strings.Contains(string(first.Body), "dual_key_required") {
+		t.Fatalf("dual key code missing: %s", string(first.Body))
+	}
+	h.PostData(t, "/api/approvals/"+a8.ID+"/decide", map[string]any{
+		"decision": "approved", "second_confirm": true,
+	}, &map[string]any{})
+	for _, action := range []string{"approval.dual_key_required", "approval.dual_key_confirm"} {
+		if list, _ := h.Store.QueryAudit(ctx, store.AuditFilter{Action: action}); len(list) == 0 {
+			t.Errorf("audit %s missing", action)
 		}
-		if !strings.Contains(string(first.Body), "dual_key_required") {
-			t.Fatalf("dual key code missing: %s", string(first.Body))
-		}
-		h.PostData(t, "/api/approvals/"+a8.ID+"/decide", map[string]any{
-			"decision": "approved", "second_confirm": true,
-		}, &map[string]any{})
-		for _, action := range []string{"approval.dual_key_required", "approval.dual_key_confirm"} {
-			if list, _ := h.Store.QueryAudit(ctx, store.AuditFilter{Action: action}); len(list) == 0 {
-				t.Errorf("audit %s missing", action)
-			}
-		}
-		if _, err := h.Store.VerifyAuditChain(ctx); err != nil {
-			t.Fatalf("audit chain: %v", err)
-		}
-		t.Log("AC-13 attention passed: batch guard, snooze restore, delegated/unauthorized decide, dual key, audit")
-	})
+	}
+	if _, err := h.Store.VerifyAuditChain(ctx); err != nil {
+		t.Fatalf("audit chain: %v", err)
+	}
+	t.Log("AC-13 attention passed: batch guard, snooze restore, delegated/unauthorized decide, dual key, audit")
 }
 
 // rawAgentPost sends an Agent-Token request without an owner cookie (delegated

@@ -49,6 +49,8 @@ type Harness struct {
 	Mock           bool
 	CoreServices   bool
 	Runtime        *core.Runtime
+	Provider       deepseek.Provider
+	MockProvider   *deepseek.Mock
 	Memory         *memory.Service
 	MemoryDisabled bool
 	stopSrv        func()
@@ -60,6 +62,7 @@ type harnessConfig struct {
 	seed           bool
 	coreServices   bool
 	memoryDisabled bool
+	noKeyProvider  bool
 }
 
 // HarnessOption customizes NewHarness.
@@ -96,6 +99,13 @@ func WithCoreServices() HarnessOption {
 // silent failure.
 func WithMemoryDisabled() HarnessOption {
 	return func(c *harnessConfig) { c.memoryDisabled = true }
+}
+
+// WithNoKeyProvider uses the real DeepSeek client with an empty API key, so a
+// turn must degrade to the documented readable no-key message instead of
+// crashing (AC-07 / AC-01 degradation path).
+func WithNoKeyProvider() HarnessOption {
+	return func(c *harnessConfig) { c.noKeyProvider = true }
 }
 
 // NewHarness starts an isolated in-process acceptance environment.
@@ -139,6 +149,9 @@ func NewHarness(t *testing.T, opts ...HarnessOption) *Harness {
 	}
 
 	h := &Harness{T: t, DataDir: cfg.DataDir, Cfg: cfg, Store: st, Faults: hc.faults, Mock: hc.modelMode == config.ModelMock, CoreServices: hc.coreServices, MemoryDisabled: hc.memoryDisabled}
+	if hc.noKeyProvider {
+		h.Provider = deepseek.New(deepseek.Config{}) // empty API key -> ErrNoAPIKey
+	}
 	if hc.faults.Enabled() {
 		path, werr := fixtures.WriteFaults(cfg.DataDir, hc.faults)
 		if werr != nil {
@@ -178,8 +191,12 @@ func (h *Harness) Start() {
 		guard := core.NewBudgetGuard(h.Store, core.BudgetPolicy{
 			DailyCNY: h.Cfg.DailyBudgetCNY, MonthlyCNY: h.Cfg.MonthlyBudgetCNY, WarnRatio: 0.8,
 		}, h.Store)
+		if h.Provider == nil {
+			h.MockProvider = deepseek.NewMock()
+			h.Provider = h.MockProvider
+		}
 		rt, rerr := core.NewRuntime(core.Options{
-			Store: h.Store, Provider: deepseek.NewMock(), Settings: h.Store, Budget: guard,
+			Store: h.Store, Provider: h.Provider, Settings: h.Store, Budget: guard,
 			Memory: memoryInjector{svc: memSvc},
 		})
 		if rerr != nil {

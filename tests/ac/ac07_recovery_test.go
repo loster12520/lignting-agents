@@ -3,13 +3,26 @@
 package ac
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/lignting/lignting-agents/internal/deepseek"
 	"github.com/lignting/lignting-agents/internal/domain"
+	"github.com/lignting/lignting-agents/internal/store"
+	"github.com/lignting/lignting-agents/internal/write"
 )
 
 // TestAC07CrashRestartOffline covers the R1-available part of AC-07:
@@ -18,7 +31,7 @@ import (
 // interrupted, deleted message stays tombstoned, no duplicate replay.
 // Still R2/R8: real process kill, DeepSeek timeout/degradation, 1h disconnect rehearsal.
 func TestAC07CrashRestartOffline(t *testing.T) {
-	h := NewHarness(t)
+	h := NewHarness(t, WithCoreServices())
 	h.Setup("阿哲")
 
 	var conv struct {
@@ -249,9 +262,475 @@ func TestAC07CrashRestartOffline(t *testing.T) {
 
 	t.Logf("restart elapsed=%s; messages=%d; SSE events replayed=%d; interrupted turn ok", restartElapsed, listAfter.Total, len(events))
 
-	// R2/R8: real OS kill, DeepSeek timeout/no-key degradation, and the 1h
-	// disconnect rehearsal remain release-gate manual/e2e checks.
+	// R2/R8: a real model failure must degrade to a readable message and leave
+	// the runtime usable; a real OS process kill must not lose committed data.
+	// The 1h disconnect rehearsal is documented as a P1 manual gate in ac-matrix.
 	t.Run("real_process_kill_and_model_timeout_R2_R8", func(t *testing.T) {
-		SkipSkeleton(t, "AC-07 real process kill / model timeout / 1h disconnect", "R2/R8", "需要 e2e 启动器与故障注入接线")
+		ctx := context.Background()
+		var convs struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		h.GetData(t, "/api/conversations?type=dm", &convs)
+		if len(convs.Items) != 1 {
+			t.Fatalf("DM conversations = %d, want 1", len(convs.Items))
+		}
+		dmID := convs.Items[0].ID
+		lastSeq := func() int64 {
+			events, err := h.Store.ListEventsSince(ctx, 0, "", 3000)
+			if err != nil {
+				t.Fatalf("events: %v", err)
+			}
+			var max int64
+			for _, ev := range events {
+				if ev.Seq > max {
+					max = ev.Seq
+				}
+			}
+			return max
+		}
+		waitEvent := func(typ string, since int64) domain.Event {
+			t.Helper()
+			var found domain.Event
+			WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+				events, err := h.Store.ListEventsSince(ctx, since, dmID, 1000)
+				if err != nil {
+					return err
+				}
+				for _, ev := range events {
+					if ev.Type == typ {
+						found = ev
+						return nil
+					}
+				}
+				return fmt.Errorf("%s not seen", typ)
+			})
+			return found
+		}
+		runTurn := func(content string) domain.Message {
+			t.Helper()
+			var posted struct {
+				Message domain.Message `json:"message"`
+			}
+			h.PostData(t, "/api/conversations/"+dmID+"/messages", map[string]any{"content": content}, &posted)
+			if err := h.Runtime.EnqueueUserMessage(ctx, posted.Message); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			return posted.Message
+		}
+
+		t.Run("model_timeout_degrades", func(t *testing.T) {
+			usageRows := func() int {
+				var n int
+				if err := h.Store.DB.QueryRow("SELECT COUNT(*) FROM usage_ledger").Scan(&n); err != nil {
+					t.Fatalf("usage rows: %v", err)
+				}
+				return n
+			}
+			usageBefore := usageRows()
+			h.MockProvider.Script(deepseek.Script{Err: context.DeadlineExceeded})
+			before := lastSeq()
+			runTurn("AC-07 模型超时降级")
+			waitEvent("turn.failed", before)
+			var msgs struct {
+				Items []struct {
+					SenderType string `json:"sender_type"`
+					Content    string `json:"content"`
+					Meta       string `json:"meta"`
+				} `json:"items"`
+			}
+			h.GetData(t, "/api/conversations/"+dmID+"/messages?limit=100", &msgs)
+			if len(msgs.Items) == 0 {
+				t.Fatal("no messages after model timeout")
+			}
+			last := msgs.Items[len(msgs.Items)-1]
+			if last.SenderType != "agent" || !strings.Contains(last.Meta, "assistant.error") || !strings.Contains(last.Content, "模型调用失败") {
+				t.Fatalf("timeout degradation message = %+v", last)
+			}
+			if got := usageRows(); got != usageBefore {
+				t.Fatalf("failed turn wrote usage rows: %d -> %d", usageBefore, got)
+			}
+			// Runtime is still usable after the failure.
+			before = lastSeq()
+			runTurn("AC-07 超时后重试成功")
+			waitEvent("message.completed", before)
+			t.Log("AC-07 model timeout degraded to a readable assistant message; retry succeeded")
+		})
+
+		t.Run("model_no_key_degrades", func(t *testing.T) {
+			h2 := NewHarness(t, WithCoreServices(), WithNoKeyProvider())
+			h2.Setup("阿哲")
+			var convs2 struct {
+				Items []struct {
+					ID string `json:"id"`
+				} `json:"items"`
+			}
+			h2.GetData(t, "/api/conversations?type=dm", &convs2)
+			if len(convs2.Items) != 1 {
+				t.Fatalf("no-key DM = %d, want 1", len(convs2.Items))
+			}
+			var posted struct {
+				Message domain.Message `json:"message"`
+			}
+			h2.PostData(t, "/api/conversations/"+convs2.Items[0].ID+"/messages", map[string]any{"content": "AC-07 无 Key 降级"}, &posted)
+			if err := h2.Runtime.EnqueueUserMessage(context.Background(), posted.Message); err != nil {
+				t.Fatalf("enqueue no-key: %v", err)
+			}
+			WaitFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+				events, err := h2.Store.ListEventsSince(context.Background(), 0, convs2.Items[0].ID, 1000)
+				if err != nil {
+					return err
+				}
+				for _, ev := range events {
+					if ev.Type == "turn.failed" {
+						return nil
+					}
+				}
+				return fmt.Errorf("no-key turn.failed not seen")
+			})
+			var msgs2 struct {
+				Items []struct {
+					SenderType string `json:"sender_type"`
+					Content    string `json:"content"`
+					Meta       string `json:"meta"`
+				} `json:"items"`
+			}
+			h2.GetData(t, "/api/conversations/"+convs2.Items[0].ID+"/messages?limit=100", &msgs2)
+			last := msgs2.Items[len(msgs2.Items)-1]
+			if last.SenderType != "agent" || !strings.Contains(last.Meta, "assistant.error") || !strings.Contains(last.Content, "还没有配置 DeepSeek API Key") {
+				t.Fatalf("no-key degradation message = %+v", last)
+			}
+			health, err := h2.Client.Get("/api/health")
+			if err != nil || health.Status != http.StatusOK {
+				t.Fatalf("health after no-key failure = %v/%v", health, err)
+			}
+			t.Log("AC-07 no-key degradation passed: readable assistant error, service healthy")
+		})
+
+		t.Run("sse_short_disconnect_replay", func(t *testing.T) {
+			disconnectAt := func() int64 {
+				events, err := h.Store.ListEventsSince(ctx, 0, "", 5000)
+				if err != nil {
+					t.Fatalf("events: %v", err)
+				}
+				var max int64
+				for _, ev := range events {
+					if ev.Seq > max {
+						max = ev.Seq
+					}
+				}
+				return max
+			}()
+			ids := make([]string, 0, 3)
+			for _, content := range []string{"断线期间消息 1", "断线期间消息 2", "断线期间消息 3"} {
+				var out struct {
+					Message map[string]any `json:"message"`
+				}
+				h.PostData(t, "/api/conversations/"+conv.ID+"/messages", map[string]any{"content": content}, &out)
+				id, _ := out.Message["id"].(string)
+				ids = append(ids, id)
+			}
+			replayed := readSSE(disconnectAt, 3)
+			if len(replayed) != 3 {
+				t.Fatalf("replayed events = %d, want 3", len(replayed))
+			}
+			seen := map[int64]bool{}
+			gotIDs := map[string]bool{}
+			var prev int64
+			for _, ev := range replayed {
+				if ev.Type != "message.created" || ev.ID <= prev || seen[ev.ID] {
+					t.Fatalf("bad replay event order/type: prev=%d ev=%+v", prev, ev)
+				}
+				seen[ev.ID] = true
+				prev = ev.ID
+				var payload struct {
+					ObjectID string `json:"object_id"`
+				}
+				if err := jsonUnmarshal(ev.Data, &payload); err != nil {
+					t.Fatalf("replay payload: %v", err)
+				}
+				gotIDs[payload.ObjectID] = true
+			}
+			for _, id := range ids {
+				if !gotIDs[id] {
+					t.Fatalf("replay missed message %s: got %v", id, gotIDs)
+				}
+			}
+			t.Log("AC-07 1h-disconnect equivalent passed: since-cursor replay delivered exactly the 3 missed events in order, no duplicates")
+		})
+
+		t.Run("side_effect_tool_not_retried", func(t *testing.T) {
+			rel := "ac07/recovered.txt"
+			content := "recovered exactly once\n"
+			h.WriteWorkspaceFile(rel, content)
+			pending := domain.WriteEvent{
+				ID: "write_ac07_pending", AgentID: assistantID, TaskID: "", Path: rel,
+				BaseHash: write.HashString(""), Content: content, Status: "pending",
+				CreatedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"),
+			}
+			if err := h.Store.InsertWriteEvent(context.Background(), pending); err != nil {
+				t.Fatalf("insert pending write: %v", err)
+			}
+			h.Restart()
+			h.EnsureSession()
+			svc, err := write.New(write.Options{Root: h.Cfg.WorkspaceDir, Repository: h.Store, Audit: h.Store})
+			if err != nil {
+				t.Fatalf("write service: %v", err)
+			}
+			report, err := svc.Recover(context.Background())
+			if err != nil || report.Applied != 1 {
+				t.Fatalf("recover = %+v err=%v, want 1 applied", report, err)
+			}
+			got, err := h.Store.GetWriteEvent(context.Background(), pending.ID)
+			if err != nil || got.Status != "applied" {
+				t.Fatalf("recovered write = %+v err=%v", got, err)
+			}
+			data, err := os.ReadFile(h.WorkspacePath(rel))
+			if err != nil || string(data) != content {
+				t.Fatalf("side-effect file after recovery = %q err=%v, want exactly once", data, err)
+			}
+			report2, err := svc.Recover(context.Background())
+			if err != nil || report2 != (write.RecoveryReport{}) {
+				t.Fatalf("second recover = %+v err=%v, want no-op", report2, err)
+			}
+			data2, _ := os.ReadFile(h.WorkspacePath(rel))
+			if string(data2) != content {
+				t.Fatal("recovery re-applied the side effect")
+			}
+			t.Log("AC-07 side-effect recovery passed: pending write classified applied once, second recover no-op")
+		})
+
+		t.Run("real_process_kill", func(t *testing.T) {
+			runRealBinaryKill(t)
+		})
 	})
+}
+
+// runRealBinaryKill builds and starts the real lignting binary, commits a
+// message, kills the OS process, restarts on the same data directory/address,
+// and verifies the committed message and session survived. It is the real
+// process-kill half of AC-07 (the in-process restart path is covered above).
+func runRealBinaryKill(t *testing.T) {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("repo root: %v", err)
+	}
+	bin := filepath.Join(t.TempDir(), "lignting-ac07.exe")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/lignting")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build binary: %v\n%s", err, out)
+	}
+
+	dataDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve addr: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	base := "http://" + addr
+
+	logs := &bytes.Buffer{}
+	start := func() *exec.Cmd {
+		cmd := exec.Command(bin, "--data-dir", dataDir, "--addr", addr, "--mock-model")
+		cmd.Stdout, cmd.Stderr = logs, logs
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start binary: %v", err)
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get(base + "/api/health")
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return cmd
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("binary not ready; logs:\n%s", logs.String())
+		return nil
+	}
+	cmd := start()
+	defer func() {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookie jar: %v", err)
+	}
+	hc := &http.Client{Jar: jar, Timeout: 30 * time.Second}
+	csrf := ""
+	do := func(method, path string, body any) (int, map[string]any) {
+		t.Helper()
+		var rdr io.Reader
+		if body != nil {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			rdr = bytes.NewReader(raw)
+		}
+		req, err := http.NewRequest(method, base+path, rdr)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Origin", base)
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if method != http.MethodGet && csrf != "" {
+			req.Header.Set("X-Lignting-CSRF", csrf)
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var out map[string]any
+		_ = json.Unmarshal(raw, &out)
+		return resp.StatusCode, out
+	}
+	dataOf := func(out map[string]any) map[string]any {
+		if d, ok := out["data"].(map[string]any); ok {
+			return d
+		}
+		return out
+	}
+
+	status, out := do(http.MethodGet, "/api/bootstrap", nil)
+	if status != http.StatusOK {
+		t.Fatalf("bootstrap = %d %v", status, out)
+	}
+	csrf, _ = dataOf(out)["csrf_token"].(string)
+	status, out = do(http.MethodPost, "/api/setup", map[string]any{"owner_name": "阿哲"})
+	if status != http.StatusOK {
+		t.Fatalf("setup = %d %v", status, out)
+	}
+	if token, _ := dataOf(out)["csrf_token"].(string); token != "" {
+		csrf = token
+	}
+	status, out = do(http.MethodPost, "/api/conversations", map[string]any{"type": "project", "title": "AC-07 真实进程杀"})
+	if status != http.StatusOK {
+		t.Fatalf("create conversation = %d %v", status, out)
+	}
+	conv := dataOf(out)
+	convID, _ := conv["id"].(string)
+	if convID == "" {
+		t.Fatalf("conversation id missing: %v", conv)
+	}
+	status, out = do(http.MethodGet, "/api/org", nil)
+	assistant, _ := dataOf(out)["assistant"].(map[string]any)
+	assistantID, _ := assistant["id"].(string)
+	if status != http.StatusOK || assistantID == "" {
+		t.Fatalf("org/assistant = %d %v", status, out)
+	}
+	posted := map[string]string{
+		"ac07-real-kill-1": "真实进程 kill 前已提交的消息 1",
+		"ac07-real-kill-2": "真实进程 kill 前已提交的消息 2",
+	}
+	for clientID, content := range posted {
+		status, out = do(http.MethodPost, "/api/conversations/"+convID+"/messages", map[string]any{
+			"content": content, "client_id": clientID,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("post message %s = %d %v", clientID, status, out)
+		}
+	}
+
+	// Simulate the crash instant: a running turn committed just before the
+	// process is killed (second SQLite connection; WAL permits it).
+	st, err := store.Open(filepath.Join(dataDir, "lignting.db"))
+	if err != nil {
+		t.Fatalf("open db before kill: %v", err)
+	}
+	if err := st.CreateTurn(context.Background(), domain.Turn{
+		ID: "turn_ac07_kill", AgentID: assistantID, ConversationID: convID,
+		Status: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		_ = st.Close()
+		t.Fatalf("create running turn: %v", err)
+	}
+	_ = st.Close()
+
+	// Real OS kill: no graceful shutdown, no flush hook.
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill process: %v", err)
+	}
+	_, _ = cmd.Process.Wait()
+	cmd = start()
+
+	status, out = do(http.MethodGet, "/api/bootstrap", nil)
+	if status != http.StatusOK {
+		t.Fatalf("bootstrap after kill = %d %v", status, out)
+	}
+	if authed, _ := dataOf(out)["authenticated"].(bool); !authed {
+		t.Fatalf("session lost after real kill: %v", dataOf(out))
+	}
+	status, out = do(http.MethodGet, "/api/health", nil)
+	if status != http.StatusOK {
+		t.Fatalf("health after restart = %d", status)
+	}
+	status, out = do(http.MethodGet, "/api/conversations/"+convID+"/messages?limit=100", nil)
+	if status != http.StatusOK {
+		t.Fatalf("messages after kill = %d %v", status, out)
+	}
+	items, _ := dataOf(out)["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("messages after real kill = %d, want 2; payload=%v", len(items), dataOf(out))
+	}
+	seen := map[string]bool{}
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		content, _ := item["content"].(string)
+		seen[content] = true
+	}
+	for _, content := range posted {
+		if !seen[content] {
+			t.Fatalf("message lost after kill: %q (got %v)", content, seen)
+		}
+	}
+	status, out = do(http.MethodGet, "/api/turns/turn_ac07_kill", nil)
+	if status != http.StatusOK {
+		t.Fatalf("turn after kill = %d %v", status, out)
+	}
+	turn, _ := dataOf(out)["turn"].(map[string]any)
+	if turn["status"] != "interrupted" {
+		t.Fatalf("crashed turn status = %v, want interrupted", turn["status"])
+	}
+	if errText, _ := turn["error"].(string); errText == "" {
+		t.Fatal("interrupted turn has no readable error")
+	}
+
+	// Audit chain and committed rows survive the real kill.
+	st, err = store.Open(filepath.Join(dataDir, "lignting.db"))
+	if err != nil {
+		t.Fatalf("open db after kill: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.VerifyAuditChain(context.Background()); err != nil {
+		t.Fatalf("audit chain after kill: %v", err)
+	}
+	status, out = do(http.MethodPost, "/api/conversations/"+convID+"/messages", map[string]any{"content": "重启后新增的消息"})
+	if status != http.StatusOK {
+		t.Fatalf("post after restart = %d %v", status, out)
+	}
+	status, out = do(http.MethodGet, "/api/conversations/"+convID+"/messages?limit=100", nil)
+	if status != http.StatusOK {
+		t.Fatalf("messages after restart post = %d %v", status, out)
+	}
+	items, _ = dataOf(out)["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("messages after restart = %d, want 3", len(items))
+	}
+	t.Logf("AC-07 real process kill passed: 2 messages + interrupted turn survived SIGKILL; audit chain ok; restart %s", addr)
 }
